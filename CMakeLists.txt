@@ -62,8 +62,6 @@ add_executable(MaterialEditor
     src/Config.cpp
     src/Shader.cpp
     src/main.cpp
-    src/cube_data.h
-    src/sphere_data.h
 )
 
 if(WIN32)
@@ -80,12 +78,12 @@ target_include_directories(MaterialEditor PRIVATE
     "${EXTERNAL_DIR}/gli"
 )
 
-target_link_libraries(MaterialEditor PRIVATE
+    target_link_libraries(MaterialEditor PRIVATE
     glad
     imgui
     glm
     gli
-)
+    )
 
 if(WIN32)
     target_link_libraries(MaterialEditor PRIVATE
@@ -101,7 +99,6 @@ elseif(UNIX)
         pthread
         m
     )
-
     target_link_options(MaterialEditor PRIVATE
         -static-libstdc++
         -static-libgcc
@@ -117,7 +114,7 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wall
         -Wextra
         -Wno-unused-parameter
-    )
+)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -133,3 +130,4 @@ endif()
 set_target_properties(MaterialEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+

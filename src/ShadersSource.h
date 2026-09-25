@@ -2,7 +2,6 @@
 
 #include <string>
 
-// Веретексный шейдер
 const std::string vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -21,7 +20,6 @@ void main() {
     FragPos = vec3(model * vec4(aPos, 1.0));
     TexCoord = aTexCoord;
 
-    // Правильный расчет нормали
     Normal = mat3(transpose(inverse(model))) * aNormal;
 
     gl_Position = projection * view * vec4(FragPos, 1.0);
@@ -29,17 +27,14 @@ void main() {
 
 )";
 
-// Фрагментный шейдер
 const std::string fragmentShaderSource = R"(
 #version 330 core
 out vec4 FragColor;
 
-// Входные данные от вершинного шейдера
 in vec2 TexCoord;
 in vec3 Normal;
 in vec3 FragPos;
 
-// Uniforms
 uniform sampler2D diffuseMap;
 uniform sampler2D normalMap;
 uniform sampler2D glossMap;
@@ -62,7 +57,6 @@ uniform float smoothness;
 uniform float reflectScale;
 uniform float reliefScale;
 
-// Сэмплирование куба из атласа 4x3
 vec3 sampleSkybox(vec3 R) {
     vec3 absR = abs(R);
     float maxVal = max(absR.x, max(absR.y, absR.z));
@@ -85,13 +79,10 @@ vec3 sampleSkybox(vec3 R) {
 }
 
 vec2 ParallaxMapping(vec2 texCoords, vec3 viewDir, mat3 TBN) {
-    // Переводим направление взгляда в касательное пространство (Tangent Space)
     vec3 V = normalize(viewDir * TBN);
     
-    // Получаем высоту из bump карты (используем красный или яркостный канал)
     float height = texture(bumpMap, texCoords).r;
     
-    // Смещение координат
     vec2 p = V.xy / (V.z + 0.42) * (height * reliefScale);
     return texCoords - p;
 }
@@ -101,7 +92,6 @@ void main() {
     vec3 I = normalize(FragPos - viewPos);
     vec3 V = -I;
 
-    // Расчет базиса TBN (нужен и для Normal map, и для Bump map)
     vec3 Q1 = dFdx(FragPos);
     vec3 Q2 = dFdy(FragPos);
     vec2 st1 = dFdx(TexCoord);
@@ -110,7 +100,6 @@ void main() {
     vec3 B = -normalize(cross(N, T));
     mat3 TBN = mat3(T, B, N);
 
-    // Применяем Parallax / Bump mapping к текстурным координатам если включено
     vec2 sampledTexCoord = TexCoord;
     if (useBump == 1) {
         sampledTexCoord = ParallaxMapping(TexCoord, V, TBN);
@@ -120,7 +109,11 @@ void main() {
     if (useDiffuse == 1) baseColor = texture(diffuseMap, sampledTexCoord).rgb;
     
     if (useNormal == 1) {
-        vec3 mapN = texture(normalMap, sampledTexCoord).rgb * 2.0 - 1.0;
+        vec2 encodedNormal = texture(normalMap, sampledTexCoord).rg * 2.0 - 1.0;
+        encodedNormal.y = -encodedNormal.y;
+        float encodedLengthSq = dot(encodedNormal, encodedNormal);
+        float normalZ = sqrt(max(0.0, 1.0 - min(encodedLengthSq, 1.0)));
+        vec3 mapN = normalize(vec3(encodedNormal, normalZ));
         N = normalize(TBN * mapN);
     }
     

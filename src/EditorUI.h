@@ -4,14 +4,23 @@
 #include "Config.h"
 #include <vector>
 #include <functional>
-void SetupModernDarkStyle();
 
+void InitUI();
+void ReleaseEditorUIPreview();
+bool IsEditorViewportHovered();
+void GetEditorViewportRect(float& x, float& y, float& w, float& h);
+void DrawEditorViewportTexture(GLuint texture);
+void DrawEditorViewportFPS(float fps);
+void DrawEditorViewportFreeCamHint();
+void ToggleEditorPanels();
 void DrawEditorUI(
     int display_w, int display_h,
     EditorConfig& editorCfg,
     std::vector<Material>& materials,
     std::vector<PhysicalMaterialEntry>& physicalMaterials,
     std::vector<std::string>& matFiles,
+    std::vector<std::string>& defFiles,
+    std::vector<std::string>& ddsFiles,
     std::string& currentFileName,
     int& currentMatIndex,
     std::string& currentDefFile,
@@ -24,6 +33,6 @@ void DrawEditorUI(
     bool& useBump,
     float& lightIntensity,
     float* lightColor,
-    GLuint& skyboxID,
+    GLuint& skyboxTexture,
     std::function<void(std::string&, int&)> refreshDataFunc
 );

@@ -1,137 +1,467 @@
 #include "Shader.h"
-#include "ShadersSource.h"
-#include <fstream>
-#include <sstream>
 #include <iostream>
-#include <filesystem>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 namespace {
-std::filesystem::path ResolveShaderPath(const char* path) {
-    std::filesystem::path input(path);
-    if (input.is_absolute() || std::filesystem::exists(input)) return input;
+const char* kVertexShader = R"SHADER(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoord;
 
-#ifdef _WIN32
-    char buffer[4096] = {};
-    unsigned long length = GetModuleFileNameA(nullptr, buffer, static_cast<unsigned long>(sizeof(buffer)));
-    if (length > 0 && length < sizeof(buffer)) {
-        return std::filesystem::path(buffer).parent_path() / input;
+out vec2 TexCoord;
+out vec3 Normal;
+out vec3 FragPos;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+void main() {
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    TexCoord = aTexCoord;
+
+    Normal = mat3(transpose(inverse(model))) * aNormal;
+
+    gl_Position = projection * view * vec4(FragPos, 1.0);
+}
+)SHADER";
+
+const char* kFragmentShader = R"SHADER(
+#version 330 core
+out vec4 FragColor;
+
+in vec2 TexCoord;
+in vec3 Normal;
+in vec3 FragPos;
+
+uniform sampler2D diffuseMap;
+uniform sampler2D normalMap;
+uniform sampler2D glossMap;
+uniform sampler2D lumaMap;
+uniform sampler2D bumpMap;
+uniform sampler2D detailMap;
+uniform samplerCube skybox;
+uniform int useSkybox;
+
+uniform int useDiffuse;
+uniform int useNormal;
+uniform int normalMapMode;
+uniform int diffuseIsSRGB;
+uniform int useGloss;
+uniform int useLuma;
+uniform int useBump;
+uniform int useDetail;
+
+uniform vec3 albedo;
+uniform vec3 lightPos;
+uniform vec3 viewPos;
+uniform vec3 lightColor;
+uniform float lightIntensity;
+uniform float smoothness;
+uniform float reflectScale;
+uniform float reliefScale;
+uniform float refractScale;
+uniform float aberrationScale;
+uniform vec2 detailScale;
+
+float ComputeLOD(const vec2 texCoord) {
+    vec2 dx = dFdx(texCoord);
+    vec2 dy = dFdy(texCoord);
+    vec2 mag = (abs(dx) + abs(dy)) * vec2(textureSize(bumpMap, 0));
+    float lod = log2(max(mag.x, mag.y));
+    return clamp(lod, 0.0, 8.0);
+}
+
+float GetHeightMapSample(const vec2 texCoord) {
+    return texture(bumpMap, texCoord).r;
+}
+
+float GetHeightMapSampleLOD(const vec2 texCoord, float lod) {
+    return textureLod(bumpMap, texCoord, lod).r;
+}
+
+float GetDepthMapSample(const vec2 texCoord) {
+    return 1.0 - GetHeightMapSample(texCoord);
+}
+
+float GetDepthMapSampleLOD(const vec2 texCoord, float lod) {
+    return 1.0 - GetHeightMapSampleLOD(texCoord, lod);
+}
+
+vec2 ParallaxOffsetMap(const vec2 texCoord, const vec3 viewVec) {
+    float bumpScale = reliefScale * 0.1;
+    vec3 newCoords = vec3(texCoord, 0.0);
+    float lod = ComputeLOD(texCoord);
+    float nz = max(abs(viewVec.z), 0.05);
+
+    for (int i = 0; i < 15; ++i) {
+        float h = GetHeightMapSampleLOD(newCoords.xy, lod);
+        float height = h * bumpScale;
+        newCoords += (height - newCoords.z) * nz * vec3(viewVec.x, -viewVec.y, viewVec.z);
     }
-#else
-    std::error_code ec;
-    std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && !executable.empty()) return executable.parent_path() / input;
-#endif
 
-    return input;
-}
+    return newCoords.xy;
 }
 
-GLuint CompileShaderFromMemory(GLenum type, const std::string& source) {
-    GLuint shader = glCreateShader(type);
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, NULL);
-    glCompileShader(shader);
-    
-    // Проверка ошибок компиляции (опционально, но полезно)
-    int success;
-    char infoLog[512];
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
-        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << infoLog << std::endl;
+vec3 ParallaxOcclusionMap(const vec2 texCoord, const vec3 viewVec) {
+    const float PARALLAX_STEPS = 15.0;
+    float stepSize = 1.0 / PARALLAX_STEPS;
+    float bumpScale = 0.2 * clamp(reliefScale, 0.0, 1.0);
+    float lod = ComputeLOD(texCoord);
+
+    if (bumpScale <= 0.0) {
+        return vec3(texCoord, 0.0);
     }
-    return shader;
-}
 
-GLuint LoadShaderFromMemory() {
+    float viewZ = max(viewVec.z, 0.05);
+    vec2 delta = bumpScale * vec2(viewVec.x, -viewVec.y) / (viewZ * PARALLAX_STEPS);
 
-    GLint success = GL_FALSE;
-    char infoLog[2048] = {};
+    float depth0 = GetDepthMapSample(texCoord);
+    float currentLayer = 1.0 - stepSize;
+    vec2 offset = texCoord + delta;
+    float depth1 = GetDepthMapSample(offset);
 
-    GLuint vertexShader = CompileShaderFromMemory(GL_VERTEX_SHADER, vertexShaderSource);
-    GLuint fragmentShader = CompileShaderFromMemory(GL_FRAGMENT_SHADER, fragmentShaderSource);
-
-    GLuint shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(shaderProgram, sizeof(infoLog), nullptr, infoLog);
-        std::cerr << "ERROR: Shader program linking failed:\n" << infoLog << std::endl;
-        glDeleteProgram(shaderProgram);
-        shaderProgram = 0;
-    }
-    
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    return shaderProgram;
-}
-
-GLuint LoadShader(const char* vertexPath, const char* fragmentPath) {
-    auto readShader = [](const std::filesystem::path& path) -> std::string {
-        std::ifstream file(path, std::ios::binary);
-        if (!file.is_open()) {
-            std::cerr << "ERROR: Failed to open shader file: " << path.string() << std::endl;
-            return {};
+    for (int i = 0; i < int(PARALLAX_STEPS); ++i) {
+        if (depth1 >= currentLayer) {
+            break;
         }
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        return buffer.str();
-    };
 
-    const std::filesystem::path resolvedVertexPath = ResolveShaderPath(vertexPath);
-    const std::filesystem::path resolvedFragmentPath = ResolveShaderPath(fragmentPath);
-    std::string vCode = readShader(resolvedVertexPath);
-    std::string fCode = readShader(resolvedFragmentPath);
-    if (vCode.empty() || fCode.empty()) return 0;
+        depth0 = depth1;
+        currentLayer -= stepSize;
+        offset += delta;
+        depth1 = GetDepthMapSampleLOD(offset, lod);
+    }
 
-    const char* vSource = vCode.c_str();
-    const char* fSource = fCode.c_str();
+    vec2 offsetBest = offset;
+    float error = 1.0;
+    float layer1 = currentLayer;
+    float layer0 = layer1 + stepSize;
+    float delta1 = layer1 - depth1;
+    float delta0 = layer0 - depth0;
+    vec4 intersect = vec4(delta * PARALLAX_STEPS, delta * PARALLAX_STEPS + texCoord);
+    float t = 0.0;
+
+    for (int i = 0; i < 10; ++i) {
+        if (abs(error) <= 0.01) {
+            break;
+        }
+
+        float denom = delta1 - delta0;
+        if (abs(denom) < 0.00001) {
+            break;
+        }
+
+        t = (layer0 * delta1 - layer1 * delta0) / denom;
+        offsetBest = -t * intersect.xy + intersect.zw;
+
+        float depth = GetDepthMapSampleLOD(offsetBest, lod);
+        error = t - depth;
+        if (error < 0.0) {
+            delta1 = error;
+            layer1 = t;
+        } else {
+            delta0 = error;
+            layer0 = t;
+        }
+    }
+
+    return vec3(offsetBest, t);
+}
+
+vec3 BuildBumpNormal(const vec2 texCoord) {
+    vec2 texel = 1.0 / max(vec2(textureSize(bumpMap, 0)), vec2(1.0));
+    float hL = texture(bumpMap, texCoord - vec2(texel.x, 0.0)).r;
+    float hR = texture(bumpMap, texCoord + vec2(texel.x, 0.0)).r;
+    float hD = texture(bumpMap, texCoord - vec2(0.0, texel.y)).r;
+    float hU = texture(bumpMap, texCoord + vec2(0.0, texel.y)).r;
+    vec2 gradient = vec2(hR - hL, hU - hD) * 0.5;
+    float strength = clamp(reliefScale, 0.0, 1.0) * 8.0;
+    return normalize(vec3(-gradient * strength, 1.0));
+}
+
+float SmoothnessToRoughness(float value) {
+    return 1.0 - clamp(value, 0.0, 1.0);
+}
+
+float DistributionGGX(vec3 n, vec3 h, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float ndoth = max(dot(n, h), 0.0);
+    float ndoth2 = ndoth * ndoth;
+    float denom = ndoth2 * (a2 - 1.0) + 1.0;
+    return a2 / max(3.14159265 * denom * denom, 0.0001);
+}
+
+float GeometrySchlickGGX(float ndotv, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return ndotv / max(ndotv * (1.0 - k) + k, 0.0001);
+}
+
+float GeometrySmith(vec3 n, vec3 v, vec3 l, float roughness) {
+    return GeometrySchlickGGX(max(dot(n, v), 0.0), roughness) *
+           GeometrySchlickGGX(max(dot(n, l), 0.0), roughness);
+}
+
+vec3 FresnelSchlick(float cosTheta, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 SRGBToLinear(vec3 value) {
+    return pow(max(value, vec3(0.0)), vec3(2.2));
+}
+
+void main() {
+    vec3 N = normalize(Normal);
+    vec3 I = normalize(FragPos - viewPos);
+    vec3 V = -I;
+
+    vec3 Q1 = dFdx(FragPos);
+    vec3 Q2 = dFdy(FragPos);
+    vec2 st1 = dFdx(TexCoord);
+    vec2 st2 = dFdy(TexCoord);
+    float uvDet = st1.x * st2.y - st1.y * st2.x;
+    vec3 T = normalize(Q1 * st2.y - Q2 * st1.y);
+    vec3 B = normalize(Q2 * st1.x - Q1 * st2.x);
+    T = normalize(T - N * dot(N, T));
+    B = normalize(cross(N, T));
+    if (uvDet < 0.0) B = -B;
+    mat3 TBN = mat3(T, B, N);
+
+    vec3 L = normalize(lightPos - FragPos);
+    vec3 lightDirTangent = normalize(transpose(TBN) * L);
+    vec3 viewDirTangent = normalize(transpose(TBN) * V);
+
+    vec2 sampledTexCoord = TexCoord;
+    float shadowFactor = 1.0;
+
+    if (useBump == 1 && reliefScale > 0.0) {
+        vec3 tangentView = normalize(viewDirTangent);
+        vec3 pomResult = ParallaxOcclusionMap(TexCoord, tangentView);
+        sampledTexCoord = pomResult.xy;
+        shadowFactor = 1.0;
+    }
+
+    vec3 baseColor = albedo;
+    if (useDiffuse == 1) {
+        vec3 diffuseColor = texture(diffuseMap, sampledTexCoord).rgb;
+        baseColor = diffuseIsSRGB == 1 ? diffuseColor : SRGBToLinear(diffuseColor);
+    }
+
+    if (useDetail == 1) {
+        vec3 detail = texture(detailMap, TexCoord * detailScale).rgb;
+        baseColor *= detail * 2.0;
+    }
+
+    vec3 tangentSurfaceNormal = vec3(0.0, 0.0, 1.0);
+
+    if (useNormal == 1) {
+        vec4 normalSample = texture(normalMap, sampledTexCoord);
+        if (normalMapMode == 1) {
+            vec2 encodedNormal = normalSample.rg * 2.0 - 1.0;
+            encodedNormal.y = -encodedNormal.y;
+            float xyLengthSq = min(dot(encodedNormal, encodedNormal), 1.0);
+            float normalZ = sqrt(max(0.0, 1.0 - xyLengthSq));
+            tangentSurfaceNormal = normalize(vec3(encodedNormal, normalZ));
+        } else {
+            tangentSurfaceNormal = normalize(normalSample.rgb * 2.0 - 1.0);
+            tangentSurfaceNormal.y = -tangentSurfaceNormal.y;
+        }
+    }
+
+    if (useBump == 1) {
+        vec3 bumpNormal = BuildBumpNormal(sampledTexCoord);
+        tangentSurfaceNormal = normalize(tangentSurfaceNormal + vec3(bumpNormal.xy, 0.0));
+    }
+
+    if (useNormal == 1 || useBump == 1) {
+        N = normalize(TBN * tangentSurfaceNormal);
+    }
+
+    float glossSmoothness = clamp(smoothness, 0.0, 1.0);
+    float metalness = 0.0;
+    float ambientOcclusion = 1.0;
+    float specularIntensity = 1.0;
+
+    if (useGloss == 1) {
+        vec4 glossData = texture(glossMap, sampledTexCoord);
+        glossSmoothness = clamp(glossData.r, 0.0, 1.0);
+
+        float glossChannelEpsilon = 0.02;
+        bool grayscaleGloss =
+            abs(glossData.r - glossData.g) < glossChannelEpsilon &&
+            abs(glossData.r - glossData.b) < glossChannelEpsilon;
+
+        if (grayscaleGloss) {
+            metalness = 0.0;
+            ambientOcclusion = 1.0;
+            specularIntensity = 1.0;
+        } else {
+            metalness = clamp(glossData.g, 0.0, 1.0);
+            ambientOcclusion = clamp(glossData.b, 0.0, 1.0);
+            specularIntensity = clamp(glossData.a, 0.0, 1.0);
+        }
+    }
+
+    float roughness = max(0.045, SmoothnessToRoughness(glossSmoothness));
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    vec3 H = normalize(V + L);
+
+    vec3 F0 = mix(vec3(0.02), baseColor, metalness);
+    float NDF = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+    vec3 specular = (NDF * G * F / max(4.0 * NdotV * NdotL, 0.0001)) *
+                    (lightColor * lightIntensity) * specularIntensity * NdotL * shadowFactor;
+
+    vec3 kS = F;
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - metalness);
+    vec3 directDiffuse = kD * baseColor * (lightColor * lightIntensity) * NdotL * shadowFactor;
+
+    vec3 ambient = baseColor * vec3(0.05) * ambientOcclusion;
+    vec3 lighting = ambient + directDiffuse + specular;
+
+    if (useLuma == 1) {
+        lighting += texture(lumaMap, sampledTexCoord).rgb;
+    }
+
+    vec3 reflection = vec3(0.0);
+    if (useSkybox == 1) {
+        vec3 reflectDir = normalize(reflect(I, N));
+        vec3 reflected = texture(skybox, reflectDir).rgb;
+        float reflectAmount = max(reflectScale, 0.0) * max(glossSmoothness, 0.0);
+        reflection = reflected * F * reflectAmount;
+
+        float refractAmount = max(refractScale, 0.0);
+        if (refractAmount > 0.0) {
+            const float eta = 0.82;
+            vec3 refractDir = normalize(refract(I, N, eta));
+            float chroma = max(aberrationScale, 0.0) * 0.02;
+            vec3 refracted;
+            refracted.r = texture(skybox, normalize(refractDir + vec3(chroma, 0.0, 0.0))).r;
+            refracted.g = texture(skybox, refractDir).g;
+            refracted.b = texture(skybox, normalize(refractDir - vec3(chroma, 0.0, 0.0))).b;
+            reflection += refracted * refractAmount;
+        }
+    }
+
+    FragColor = vec4(max(lighting + reflection, vec3(0.0)), 1.0);
+}
+)SHADER";
+}
+
+GLuint LoadShader() {
     GLint success = GL_FALSE;
-    char infoLog[2048] = {};
+    char infoLog[4096] = {};
 
-    GLuint v = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(v, 1, &vSource, nullptr);
-    glCompileShader(v);
-    glGetShaderiv(v, GL_COMPILE_STATUS, &success);
+    GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertex, 1, &kVertexShader, nullptr);
+    glCompileShader(vertex);
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(v, sizeof(infoLog), nullptr, infoLog);
-        std::cerr << "ERROR: Vertex shader compilation failed (" << resolvedVertexPath.string() << "):\n" << infoLog << std::endl;
-        glDeleteShader(v);
+        glGetShaderInfoLog(vertex, sizeof(infoLog), nullptr, infoLog);
+        std::cerr << "ERROR: Embedded vertex shader compilation failed:\n" << infoLog << std::endl;
+        glDeleteShader(vertex);
         return 0;
     }
 
-    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(f, 1, &fSource, nullptr);
-    glCompileShader(f);
-    glGetShaderiv(f, GL_COMPILE_STATUS, &success);
+    GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragment, 1, &kFragmentShader, nullptr);
+    glCompileShader(fragment);
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(f, sizeof(infoLog), nullptr, infoLog);
-        std::cerr << "ERROR: Fragment shader compilation failed (" << resolvedFragmentPath.string() << "):\n" << infoLog << std::endl;
-        glDeleteShader(v);
-        glDeleteShader(f);
+        glGetShaderInfoLog(fragment, sizeof(infoLog), nullptr, infoLog);
+        std::cerr << "ERROR: Embedded fragment shader compilation failed:\n" << infoLog << std::endl;
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
         return 0;
     }
 
     GLuint program = glCreateProgram();
-    glAttachShader(program, v);
-    glAttachShader(program, f);
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
     glLinkProgram(program);
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         glGetProgramInfoLog(program, sizeof(infoLog), nullptr, infoLog);
-        std::cerr << "ERROR: Shader program linking failed:\n" << infoLog << std::endl;
+        std::cerr << "ERROR: Embedded shader program linking failed:\n" << infoLog << std::endl;
         glDeleteProgram(program);
         program = 0;
     }
 
-    glDeleteShader(v);
-    glDeleteShader(f);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
     return program;
 }
+
+namespace {
+const char* kSkyboxVertexShader = R"SHADER(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+out vec3 TexCoord;
+uniform mat4 view;
+uniform mat4 projection;
+void main() {
+    TexCoord = aPos;
+    vec4 position = projection * view * vec4(aPos, 1.0);
+    gl_Position = position.xyww;
+}
+)SHADER";
+
+const char* kSkyboxFragmentShader = R"SHADER(
+#version 330 core
+in vec3 TexCoord;
+out vec4 FragColor;
+uniform samplerCube skybox;
+
+void main() {
+    vec3 direction = TexCoord;
+    if (direction.y > abs(direction.x) && direction.y > abs(direction.z)) {
+        direction = vec3(-direction.z, direction.y, direction.x);
+    }
+    FragColor = texture(skybox, direction);
+}
+)SHADER";
+}
+
+GLuint LoadSkyboxShader() {
+    GLint success = GL_FALSE;
+    char infoLog[4096] = {};
+    GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertex, 1, &kSkyboxVertexShader, nullptr);
+    glCompileShader(vertex);
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertex, sizeof(infoLog), nullptr, infoLog);
+        std::cerr << "ERROR: Embedded skybox vertex shader compilation failed:\n" << infoLog << std::endl;
+        glDeleteShader(vertex);
+        return 0;
+    }
+    GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragment, 1, &kSkyboxFragmentShader, nullptr);
+    glCompileShader(fragment);
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragment, sizeof(infoLog), nullptr, infoLog);
+        std::cerr << "ERROR: Embedded skybox fragment shader compilation failed:\n" << infoLog << std::endl;
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(program, sizeof(infoLog), nullptr, infoLog);
+        std::cerr << "ERROR: Embedded skybox shader program linking failed:\n" << infoLog << std::endl;
+        glDeleteProgram(program);
+        program = 0;
+    }
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    return program;
+}
+

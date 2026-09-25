@@ -12,6 +12,8 @@ struct BuiltinBezierPatch {
     glm::vec3 p[4][4];
 };
 
+// todo: функции builtin geometry сейчас static в header и получают отдельную копию в каждом translation unit. можно вынести реализацию в один .cpp, а в header оставить только объявления
+
 static void builtinAddVertex(MeshData& mesh, const glm::vec3& p, const glm::vec3& n, const glm::vec2& uv) {
     mesh.vertices.push_back(p.x);
     mesh.vertices.push_back(p.y);
@@ -230,3 +232,83 @@ static MeshData makeNewellTeapot() {
     }
     return mesh;
 }
+
+static constexpr float kBuiltinCubeVertices[] = {
+    -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f, 0.0f, 1.0f,
+     0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f, 1.0f, 1.0f,
+     0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f, 1.0f, 0.0f,
+    -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f, 0.0f, 0.0f,
+    
+     0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 0.0f, 1.0f,
+    -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 1.0f, 1.0f,
+    -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 1.0f, 0.0f,
+     0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f, 0.0f, 0.0f,
+    
+    -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f, 0.0f, 1.0f,
+    -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f, 1.0f, 1.0f,
+    -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f, 1.0f, 0.0f,
+    -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f, 0.0f, 0.0f,
+    
+     0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f, 0.0f, 1.0f,
+     0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f, 1.0f, 1.0f,
+     0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f, 1.0f, 0.0f,
+     0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f, 0.0f, 0.0f,
+    
+    -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f, 0.0f, 0.0f,
+     0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f, 1.0f, 0.0f,
+     0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f, 1.0f, 1.0f,
+    -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f, 0.0f, 1.0f,
+    
+    -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f, 0.0f, 1.0f,
+     0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f, 1.0f, 1.0f,
+     0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f, 1.0f, 0.0f,
+    -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f, 0.0f, 0.0f
+};
+
+static constexpr unsigned int kBuiltinCubeIndices[] = {
+    0, 1, 2, 2, 3, 0,
+    4, 5, 6, 6, 7, 4,
+    8, 9, 10, 10, 11, 8,
+    12, 13, 14, 14, 15, 12,
+    16, 17, 18, 18, 19, 16,
+    20, 21, 22, 22, 23, 20
+};
+
+#include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
+
+struct BuiltinSphere {
+    std::vector<float> vertices;
+    std::vector<unsigned int> indices;
+
+    explicit BuiltinSphere(int rings = 32, int sectors = 32) {
+        float const R = 1.0f / (float)(rings - 1);
+        float const S = 1.0f / (float)(sectors - 1);
+
+        for (int r = 0; r < rings; ++r) {
+            for (int s = 0; s < sectors; ++s) {
+                float y = sin(-glm::pi<float>() / 2.0f + glm::pi<float>() * r * R);
+                float x = cos(2.0f * glm::pi<float>() * s * S) * sin(glm::pi<float>() * r * R);
+                float z = sin(2.0f * glm::pi<float>() * s * S) * sin(glm::pi<float>() * r * R);
+
+                glm::vec3 pos(x, y, z);
+                glm::vec3 norm = glm::normalize(pos);
+                vertices.push_back(pos.x); vertices.push_back(pos.y); vertices.push_back(pos.z);
+                vertices.push_back(norm.x); vertices.push_back(norm.y); vertices.push_back(norm.z);
+                vertices.push_back(s * S); vertices.push_back(r * R);
+            }
+        }
+
+        for (int r = 0; r < rings - 1; ++r) {
+            for (int s = 0; s < sectors - 1; ++s) {
+                indices.push_back(r * sectors + s);
+                indices.push_back(r * sectors + (s + 1));
+                indices.push_back((r + 1) * sectors + (s + 1));
+                indices.push_back((r + 1) * sectors + (s + 1));
+                indices.push_back((r + 1) * sectors + s);
+                indices.push_back(r * sectors + s);
+            }
+        }
+    }
+};

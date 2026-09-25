@@ -2,8 +2,13 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <vector>
 #include <cstring>
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <unordered_set>
+#include <unordered_map>
 #include <gli/gli.hpp>
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -41,20 +46,105 @@ std::vector<std::string> LoadPhysicalMaterialTypes() {
 }
 
 namespace {
+struct CachedDDS {
+    GLuint texture = 0;
+    std::filesystem::file_time_type writeTime{};
+    std::size_t refs = 0;
+    TextureFormatInfo formatInfo{};
+};
+
+std::unordered_map<std::string, CachedDDS> g_ddsCache;
+std::unordered_map<GLuint, TextureFormatInfo> g_textureFormatInfo;
+
+constexpr GLenum kGLCompressedRG_RGTC2 = 0x8DBD;
+constexpr GLenum kGLCompressedSignedRG_RGTC2 = 0x8DBE;
+constexpr GLenum kGLCompressedRGBA_BPTC_UNORM = 0x8E8C;
+constexpr GLenum kGLCompressedSRGBAlpha_BPTC_UNORM = 0x8E8D;
+constexpr GLenum kGLCompressedRGB_BPTC_SIGNED_FLOAT = 0x8E8E;
+constexpr GLenum kGLCompressedRGB_BPTC_UNSIGNED_FLOAT = 0x8E8F;
+constexpr GLenum kGLCompressedSRGB_S3TC_DXT1_EXT = 0x8C4C;
+constexpr GLenum kGLCompressedSRGBAlpha_S3TC_DXT1_EXT = 0x8C4D;
+constexpr GLenum kGLCompressedSRGBAlpha_S3TC_DXT3_EXT = 0x8C4E;
+constexpr GLenum kGLCompressedSRGBAlpha_S3TC_DXT5_EXT = 0x8C4F;
+
+TextureFormatInfo DetectTextureFormatInfo(GLenum internalFormat, GLenum externalFormat) {
+    TextureFormatInfo info;
+    info.valid = internalFormat != GL_NONE;
+    info.compressed = externalFormat == GL_NONE;
+    info.channels = 4;
+
+    switch (internalFormat) {
+        case kGLCompressedRG_RGTC2:
+        case kGLCompressedSignedRG_RGTC2:
+            info.bc5 = true;
+            info.channels = 2;
+            break;
+        case kGLCompressedRGBA_BPTC_UNORM:
+            info.channels = 4;
+            break;
+        case kGLCompressedSRGBAlpha_BPTC_UNORM:
+            info.channels = 4;
+            info.srgb = true;
+            break;
+        case kGLCompressedRGB_BPTC_SIGNED_FLOAT:
+        case kGLCompressedRGB_BPTC_UNSIGNED_FLOAT:
+            info.channels = 3;
+            break;
+        case kGLCompressedSRGB_S3TC_DXT1_EXT:
+        case kGLCompressedSRGBAlpha_S3TC_DXT1_EXT:
+        case kGLCompressedSRGBAlpha_S3TC_DXT3_EXT:
+        case kGLCompressedSRGBAlpha_S3TC_DXT5_EXT:
+            info.srgb = true;
+            break;
+        case GL_R8:
+        case GL_R16F:
+        case GL_R32F:
+            info.channels = 1;
+            break;
+        case GL_RG8:
+        case GL_RG16F:
+        case GL_RG32F:
+            info.channels = 2;
+            break;
+        case GL_RGB8:
+        case GL_RGB16F:
+        case GL_RGB32F:
+            info.channels = 3;
+            break;
+        case GL_SRGB8:
+            info.channels = 3;
+            info.srgb = true;
+            break;
+        case GL_SRGB8_ALPHA8:
+            info.channels = 4;
+            info.srgb = true;
+            break;
+        default:
+            break;
+    }
+
+    return info;
+}
+
 void CopyString(char* destination, std::size_t capacity, const std::string& value) {
     if (capacity == 0) return;
     std::strncpy(destination, value.c_str(), capacity - 1);
     destination[capacity - 1] = '\0';
 }
 
-GLuint UploadDDS2D(const gli::texture& texture, const std::string& sourcePath) {
-    if (texture.empty() || texture.levels() == 0) return 0;
+struct UploadedDDS {
+    GLuint texture = 0;
+    TextureFormatInfo formatInfo{};
+};
+
+UploadedDDS UploadDDS2D(const gli::texture& texture, const std::string& sourcePath) {
+    if (texture.empty() || texture.levels() == 0) return {};
 
     gli::gl GL(gli::gl::PROFILE_GL33);
     const gli::gl::format Format = GL.translate(texture.format(), texture.swizzles());
     if (Format.Internal == GL_NONE) {
         std::cerr << "Unsupported DDS format: " << sourcePath << std::endl;
-        return 0;
+        return {};
     }
 
     GLuint textureID = 0;
@@ -65,8 +155,8 @@ GLuint UploadDDS2D(const gli::texture& texture, const std::string& sourcePath) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(texture.levels() - 1));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, texture.levels() > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
     const bool compressed = Format.External == GL_NONE || Format.Type == GL_NONE;
     for (std::size_t level = 0; level < texture.levels(); ++level) {
@@ -99,38 +189,143 @@ GLuint UploadDDS2D(const gli::texture& texture, const std::string& sourcePath) {
     if (glGetError() != GL_NO_ERROR) {
         glDeleteTextures(1, &textureID);
         std::cerr << "Failed to upload DDS texture: " << sourcePath << std::endl;
-        return 0;
+        return {};
     }
 
-    return textureID;
+    UploadedDDS uploaded;
+    uploaded.texture = textureID;
+    uploaded.formatInfo = DetectTextureFormatInfo(Format.Internal, Format.External);
+    return uploaded;
 }
 }
 
 GLuint LoadDDSTexture(const std::string& path) {
     fs::path fullPath = fs::path(path).is_absolute() ? fs::path(path) : (gameRootPath / path);
-    std::string ddsFilePath = fullPath.string() + ".dds";
+    if (fullPath.extension() != ".dds" && fullPath.extension() != ".DDS") fullPath += ".dds";
+    std::error_code ec;
+    const fs::path canonicalPath = fs::weakly_canonical(fullPath, ec);
+    if (!ec) fullPath = canonicalPath;
+    ec.clear();
+    const std::string key = fullPath.generic_string();
+    const auto writeTime = fs::exists(fullPath, ec) ? fs::last_write_time(fullPath, ec) : fs::file_time_type{};
+    auto cacheIt = g_ddsCache.find(key);
+    if (cacheIt != g_ddsCache.end()) {
+        if (!ec && cacheIt->second.texture != 0 && cacheIt->second.writeTime == writeTime) {
+            ++cacheIt->second.refs;
+            return cacheIt->second.texture;
+        }
+        if (cacheIt->second.texture != 0) {
+            g_textureFormatInfo.erase(cacheIt->second.texture);
+            glDeleteTextures(1, &cacheIt->second.texture);
+        }
+        g_ddsCache.erase(cacheIt);
+    }
+
+    const std::string ddsFilePath = fullPath.string();
     gli::texture texture = gli::load(ddsFilePath);
     if (texture.empty()) {
         std::cerr << "Failed to load DDS: " << ddsFilePath << std::endl;
         return 0;
     }
-    return UploadDDS2D(texture, ddsFilePath);
+    const UploadedDDS uploaded = UploadDDS2D(texture, ddsFilePath);
+    if (uploaded.texture == 0) return 0;
+
+    g_ddsCache.emplace(key, CachedDDS{uploaded.texture, writeTime, 1, uploaded.formatInfo});
+    g_textureFormatInfo[uploaded.texture] = uploaded.formatInfo;
+    return uploaded.texture;
+}
+
+void ReleaseDDSTexture(GLuint texture) {
+    if (texture == 0) return;
+    for (auto it = g_ddsCache.begin(); it != g_ddsCache.end(); ++it) {
+        if (it->second.texture != texture) continue;
+        if (it->second.refs > 1) {
+            --it->second.refs;
+        } else {
+            g_textureFormatInfo.erase(it->second.texture);
+            glDeleteTextures(1, &it->second.texture);
+            g_ddsCache.erase(it);
+        }
+        return;
+    }
+    g_textureFormatInfo.erase(texture);
+    glDeleteTextures(1, &texture);
+}
+
+TextureFormatInfo GetTextureFormatInfo(GLuint texture) {
+    if (texture == 0) return {};
+    auto it = g_textureFormatInfo.find(texture);
+    if (it != g_textureFormatInfo.end()) return it->second;
+
+    GLint internalFormat = GL_NONE;
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &internalFormat);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (internalFormat == GL_NONE) return {};
+    return DetectTextureFormatInfo(static_cast<GLenum>(internalFormat), GL_NONE);
 }
 
 GLuint LoadDDS_Cubemap(const std::string& path) {
-    gli::texture texture = gli::load(path + ".dds");
-    if (texture.empty()) return 0;
+    fs::path base = fs::path(path).is_absolute() ? fs::path(path) : (gameRootPath / path);
+    if (base.extension() == ".dds" || base.extension() == ".DDS") base.replace_extension();
+
+    const fs::path singlePath = base.string() + ".dds";
+    gli::texture single = gli::load(singlePath.string());
+    if (!single.empty() && single.faces() == 6) {
+        gli::gl GL(gli::gl::PROFILE_GL33);
+        const gli::gl::format Format = GL.translate(single.format(), single.swizzles());
+        if (Format.Internal == GL_NONE) return 0;
+
+        GLuint textureID = 0;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+        const bool compressed = Format.External == GL_NONE || Format.Type == GL_NONE;
+        for (std::size_t face = 0; face < 6; ++face) {
+            for (std::size_t level = 0; level < single.levels(); ++level) {
+                const GLsizei width = static_cast<GLsizei>(single.extent(level).x);
+                const GLsizei height = static_cast<GLsizei>(single.extent(level).y);
+                const GLsizei size = static_cast<GLsizei>(single.size(level));
+                const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(face);
+                if (compressed) {
+                    glCompressedTexImage2D(target, static_cast<GLint>(level), Format.Internal, width, height, 0, size, single.data(face, 0, level));
+                } else {
+                    glTexImage2D(target, static_cast<GLint>(level), Format.Internal, width, height, 0, Format.External, Format.Type, single.data(face, 0, level));
+                }
+            }
+        }
+        if (glGetError() != GL_NO_ERROR) {
+            glDeleteTextures(1, &textureID);
+            return 0;
+        }
+        return textureID;
+    }
+
+    const std::array<std::string, 6> suffixes = {"rt", "lf", "up", "dn", "bk", "ft"};
+    std::array<gli::texture, 6> faces;
+    for (std::size_t i = 0; i < suffixes.size(); ++i) {
+        fs::path facePath = base.parent_path() / (base.filename().string() + suffixes[i] + ".dds");
+        faces[i] = gli::load(facePath.string());
+        if (faces[i].empty() || faces[i].faces() != 1 || faces[i].levels() == 0) return 0;
+    }
 
     gli::gl GL(gli::gl::PROFILE_GL33);
-    const gli::gl::format Format = GL.translate(texture.format(), texture.swizzles());
-    if (Format.Internal == GL_NONE || texture.faces() != 6) return 0;
+    const gli::gl::format Format = GL.translate(faces[0].format(), faces[0].swizzles());
+    if (Format.Internal == GL_NONE) return 0;
 
     GLuint textureID = 0;
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(texture.levels() - 1));
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, texture.levels() > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -138,31 +333,19 @@ GLuint LoadDDS_Cubemap(const std::string& path) {
 
     const bool compressed = Format.External == GL_NONE || Format.Type == GL_NONE;
     for (std::size_t face = 0; face < 6; ++face) {
-        for (std::size_t level = 0; level < texture.levels(); ++level) {
-            const GLsizei width = static_cast<GLsizei>(texture.extent(level).x);
-            const GLsizei height = static_cast<GLsizei>(texture.extent(level).y);
-            const GLsizei size = static_cast<GLsizei>(texture.size(level));
+        if (faces[face].format() != faces[0].format() || faces[face].levels() != faces[0].levels()) {
+            glDeleteTextures(1, &textureID);
+            return 0;
+        }
+        for (std::size_t level = 0; level < faces[face].levels(); ++level) {
+            const GLsizei width = static_cast<GLsizei>(faces[face].extent(level).x);
+            const GLsizei height = static_cast<GLsizei>(faces[face].extent(level).y);
+            const GLsizei size = static_cast<GLsizei>(faces[face].size(level));
             const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(face);
-
             if (compressed) {
-                glCompressedTexImage2D(target,
-                                       static_cast<GLint>(level),
-                                       Format.Internal,
-                                       width,
-                                       height,
-                                       0,
-                                       size,
-                                       texture.data(face, 0, level));
+                glCompressedTexImage2D(target, static_cast<GLint>(level), Format.Internal, width, height, 0, size, faces[face].data(0, 0, level));
             } else {
-                glTexImage2D(target,
-                             static_cast<GLint>(level),
-                             Format.Internal,
-                             width,
-                             height,
-                             0,
-                             Format.External,
-                             Format.Type,
-                             texture.data(face, 0, level));
+                glTexImage2D(target, static_cast<GLint>(level), Format.Internal, width, height, 0, Format.External, Format.Type, faces[face].data(0, 0, level));
             }
         }
     }
@@ -172,17 +355,6 @@ GLuint LoadDDS_Cubemap(const std::string& path) {
         return 0;
     }
     return textureID;
-}
-
-GLuint LoadSkyboxAs2D(const std::string& path) {
-    fs::path fullPath = fs::path(path).is_absolute() ? fs::path(path) : (gameRootPath / path);
-    std::string ddsFilePath = fullPath.string() + ".dds";
-    gli::texture texture = gli::load(ddsFilePath);
-    if (texture.empty()) {
-        std::cerr << "Failed to load Skybox DDS: " << ddsFilePath << std::endl;
-        return 0;
-    }
-    return UploadDDS2D(texture, ddsFilePath);
 }
 
 void Material::updateBuffers() {
@@ -268,7 +440,7 @@ void Material::syncParams() {
 
 void Material::releaseTextures() {
     for (const auto& [key, id] : textures) {
-        if (id != 0) glDeleteTextures(1, &id);
+        if (id != 0) ReleaseDDSTexture(id);
     }
     textures.clear();
 }
@@ -276,11 +448,12 @@ void Material::releaseTextures() {
 void Material::loadTextures() {
     releaseTextures();
     for(auto& p : params) {
-        if(p.first == "diffuseMap") textures["diffuse"] = LoadDDSTexture(p.second);
-        if(p.first == "normalMap") textures["normal"] = LoadDDSTexture(p.second);
-        if(p.first == "glossMap") textures["gloss"] = LoadDDSTexture(p.second);
-        if(p.first == "LumaMap") textures["luma"] = LoadDDSTexture(p.second);
-        if(p.first == "bumpMap" || p.first == "bump") textures["bump"] = LoadDDSTexture(p.second);
+        if(p.first == "diffuseMap") textures["diffuse"] = LoadTextureReference(p.second);
+        if(p.first == "normalMap") textures["normal"] = LoadTextureReference(p.second);
+        if(p.first == "glossMap") textures["gloss"] = LoadTextureReference(p.second);
+        if(p.first == "LumaMap") textures["luma"] = LoadTextureReference(p.second);
+        if(p.first == "bumpMap" || p.first == "bump") textures["bump"] = LoadTextureReference(p.second);
+        if(p.first == "detailmap") textures["detail"] = LoadTextureReference(p.second);
     }
 }
 
@@ -454,4 +627,243 @@ void SaveAllMaterials(const std::string& path, const std::vector<Material>& mate
         }
         file << "}\n";
     }
+}
+
+namespace {
+std::vector<WadArchive> g_wadArchives;
+#pragma pack(push, 1)
+struct WadHeaderRaw { char identification[4]; std::int32_t numLumps; std::int32_t infoTableOffset; };
+struct WadLumpRaw { std::int32_t filePos; std::int32_t diskSize; std::int32_t size; std::uint8_t type; std::uint8_t compression; std::uint16_t padding; char name[16]; };
+#pragma pack(pop)
+
+bool ReadWadArchive(const std::string& relativePath, WadArchive& out) {
+    fs::path fullPath = fs::path(relativePath).is_absolute() ? fs::path(relativePath) : gameRootPath / relativePath;
+    std::ifstream file(fullPath, std::ios::binary);
+    if (!file) return false;
+
+    WadHeaderRaw header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file || (std::strncmp(header.identification, "WAD2", 4) != 0 && std::strncmp(header.identification, "WAD3", 4) != 0)) return false;
+    if (header.numLumps < 0 || header.numLumps > 1000000 || header.infoTableOffset < 0) return false;
+
+    file.seekg(header.infoTableOffset, std::ios::beg);
+    if (!file) return false;
+
+    out = {};
+    out.relativePath = relativePath;
+    out.displayName = fullPath.filename().string();
+
+    for (std::int32_t i = 0; i < header.numLumps; ++i) {
+        WadLumpRaw lump{};
+        file.read(reinterpret_cast<char*>(&lump), sizeof(lump));
+        if (!file) return false;
+        if (lump.type != 0x43 || lump.compression != 0) continue;
+        if (lump.filePos < 0 || lump.diskSize < 40 || lump.diskSize > 256 * 1024 * 1024) continue;
+
+        const auto directoryReturn = file.tellg();
+        file.seekg(lump.filePos, std::ios::beg);
+        if (!file) { file.clear(); file.seekg(directoryReturn); continue; }
+
+        char textureName[16]{};
+        std::int32_t width = 0;
+        std::int32_t height = 0;
+        std::int32_t offsets[4]{};
+        file.read(textureName, sizeof(textureName));
+        file.read(reinterpret_cast<char*>(&width), sizeof(width));
+        file.read(reinterpret_cast<char*>(&height), sizeof(height));
+        file.read(reinterpret_cast<char*>(offsets), sizeof(offsets));
+
+        if (!file || width <= 0 || height <= 0 || width > 8192 || height > 8192 || offsets[0] < 40) {
+            file.clear();
+            file.seekg(directoryReturn);
+            continue;
+        }
+
+        const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        if (pixelCount > 64u * 1024u * 1024u) {
+            file.clear();
+            file.seekg(directoryReturn);
+            continue;
+        }
+
+        WadTexture texture;
+        texture.name.assign(textureName, strnlen(textureName, sizeof(textureName)));
+        if (texture.name.empty()) {
+            file.clear();
+            file.seekg(directoryReturn);
+            continue;
+        }
+        texture.width = width;
+        texture.height = height;
+
+        const std::streamoff lumpStart = static_cast<std::streamoff>(lump.filePos);
+        const std::streamoff pixelOffset = lumpStart + static_cast<std::streamoff>(offsets[0]);
+        const std::streamoff paletteOffset = lumpStart + static_cast<std::streamoff>(offsets[3]) + static_cast<std::streamoff>((width / 8) * (height / 8));
+        if (pixelOffset < 0 || paletteOffset < 0 || pixelOffset + static_cast<std::streamoff>(pixelCount) > lumpStart + lump.diskSize) {
+            file.clear();
+            file.seekg(directoryReturn);
+            continue;
+        }
+
+        texture.pixelOffset = static_cast<std::uint32_t>(pixelOffset);
+        texture.paletteOffset = static_cast<std::uint32_t>(paletteOffset);
+        out.textures.push_back(std::move(texture));
+        file.clear();
+        file.seekg(directoryReturn);
+    }
+    return true;
+}
+
+}
+
+TexturePreviewInfo LoadTexturePreview(const std::string& reference) {
+    TexturePreviewInfo info{};
+    const WadArchive* wad = nullptr;
+    const WadTexture* wadTexture = nullptr;
+
+    if (reference.rfind("wad://", 0) == 0) {
+        const std::string encoded = reference.substr(6);
+        const std::size_t separator = encoded.rfind('#');
+        if (separator == std::string::npos) return info;
+        const std::string wadPath = encoded.substr(0, separator);
+        const std::string textureName = encoded.substr(separator + 1);
+        for (const auto& candidate : g_wadArchives) {
+            if (candidate.relativePath == wadPath) {
+                wad = &candidate;
+                break;
+            }
+        }
+        if (!wad) return info;
+        for (const auto& candidate : wad->textures) {
+            if (candidate.name == textureName) {
+                wadTexture = &candidate;
+                break;
+            }
+        }
+        if (!wadTexture || wadTexture->pixelOffset == 0 || wadTexture->paletteOffset == 0) return info;
+
+        const fs::path wadFilePath = fs::path(wadPath).is_absolute() ? fs::path(wadPath) : (gameRootPath / wadPath);
+        std::ifstream wadFile(wadFilePath, std::ios::binary);
+        if (!wadFile) return info;
+
+        const std::size_t pixelCount = static_cast<std::size_t>(wadTexture->width) * static_cast<std::size_t>(wadTexture->height);
+        std::vector<unsigned char> indices(pixelCount);
+        wadFile.seekg(static_cast<std::streamoff>(wadTexture->pixelOffset), std::ios::beg);
+        wadFile.read(reinterpret_cast<char*>(indices.data()), static_cast<std::streamsize>(indices.size()));
+        if (!wadFile) return info;
+
+        wadFile.seekg(static_cast<std::streamoff>(wadTexture->paletteOffset), std::ios::beg);
+        std::uint16_t paletteCount = 0;
+        wadFile.read(reinterpret_cast<char*>(&paletteCount), sizeof(paletteCount));
+        if (!wadFile || paletteCount < 256) return info;
+
+        std::array<unsigned char, 256 * 3> palette{};
+        wadFile.read(reinterpret_cast<char*>(palette.data()), static_cast<std::streamsize>(palette.size()));
+        if (!wadFile) return info;
+
+        std::vector<unsigned char> rgba(pixelCount * 4u);
+        for (std::size_t px = 0; px < pixelCount; ++px) {
+            const unsigned int index = indices[px];
+            rgba[px * 4u + 0] = palette[index * 3u + 0];
+            rgba[px * 4u + 1] = palette[index * 3u + 1];
+            rgba[px * 4u + 2] = palette[index * 3u + 2];
+            rgba[px * 4u + 3] = (!wadTexture->name.empty() && wadTexture->name[0] == '{' && index == 255u) ? 0u : 255u;
+        }
+
+        glGenTextures(1, &info.texture);
+        glBindTexture(GL_TEXTURE_2D, info.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, wadTexture->width, wadTexture->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        if (glGetError() != GL_NO_ERROR) {
+            ReleaseTexturePreview(info);
+            return {};
+        }
+        info.width = wadTexture->width;
+        info.height = wadTexture->height;
+        info.valid = true;
+        return info;
+    }
+
+    const GLuint texture = LoadDDSTexture(reference);
+    if (!texture) return info;
+    GLint width = 0, height = 0;
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    info.texture = texture;
+    info.width = std::max(0, width);
+    info.height = std::max(0, height);
+    info.valid = width > 0 && height > 0;
+    info.cachedDDS = true;
+    if (!info.valid) ReleaseTexturePreview(info);
+    return info;
+}
+
+GLuint LoadTextureReference(const std::string& reference) {
+    if (reference.rfind("wad://", 0) == 0) {
+        TexturePreviewInfo preview = LoadTexturePreview(reference);
+        const GLuint texture = preview.texture;
+        preview.texture = 0;
+        ReleaseTexturePreview(preview);
+        return texture;
+    }
+    return LoadDDSTexture(reference);
+}
+
+void ReleaseTexturePreview(TexturePreviewInfo& preview) {
+    if (preview.texture) {
+        if (preview.cachedDDS) ReleaseDDSTexture(preview.texture);
+        else glDeleteTextures(1, &preview.texture);
+    }
+    preview = {};
+}
+
+const std::vector<WadArchive>& GetWadArchives() { return g_wadArchives; }
+
+bool AddWadArchive(const std::string& relativePath) {
+    const auto duplicate = std::find_if(g_wadArchives.begin(), g_wadArchives.end(), [&](const WadArchive& wad) { return wad.relativePath == relativePath; });
+    if (duplicate != g_wadArchives.end()) return true;
+    WadArchive wad;
+    if (!ReadWadArchive(relativePath, wad)) return false;
+    g_wadArchives.push_back(std::move(wad));
+    return true;
+}
+
+void LoadWadArchives(const std::vector<std::string>& paths) {
+    ClearWadArchives();
+    for (const auto& path : paths) AddWadArchive(path);
+}
+
+void ScanAndLoadAllWads() {
+    ClearWadArchives();
+    if (gameRootPath.empty() || !fs::exists(gameRootPath)) return;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(gameRootPath, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
+        if (ec) { ec.clear(); continue; }
+        if (!it->is_regular_file(ec)) continue;
+        if (it->path().extension() != ".wad" && it->path().extension() != ".WAD") continue;
+        std::error_code rec;
+        const std::string relative = fs::relative(it->path(), gameRootPath, rec).generic_string();
+        if (!rec) AddWadArchive(relative);
+    }
+}
+
+void ClearWadArchives() { g_wadArchives.clear(); }
+
+std::vector<std::string> GetLoadedWadPaths() {
+    std::vector<std::string> paths;
+    paths.reserve(g_wadArchives.size());
+    for (const auto& wad : g_wadArchives) paths.push_back(wad.relativePath);
+    return paths;
+}
+
+std::string MakeWadTextureReference(const WadArchive& wad, const WadTexture& texture) {
+    return std::string("wad://") + wad.relativePath + "#" + texture.name;
 }

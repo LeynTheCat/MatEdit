@@ -9,6 +9,10 @@
 #include <utility>
 #include <chrono>
 #include <thread>
+#include <filesystem>
+#include <array>
+#include <map>
+#include <sstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -18,12 +22,16 @@
 #include "Shader.h"
 #include "EditorUI.h"
 
+static std::string ToLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
-
-#include "cube_data.h"
-#include "sphere_data.h"
 
 struct MeshData {
     std::vector<float> vertices;
@@ -77,6 +85,53 @@ struct MeshGPU {
     }
 };
 
+static std::vector<std::string> FindDDSCubemapNames(const std::filesystem::path& envPath) {
+    std::vector<std::string> result;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(envPath, ec)) return result;
+
+    const std::array<std::string, 6> suffixes = {"bk", "lf", "rt", "ft", "up", "dn"};
+    struct Group {
+        std::string base;
+        std::array<bool, 6> present{};
+    };
+    std::map<std::string, Group> groups;
+
+    for (const auto& item : std::filesystem::directory_iterator(envPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (!item.is_regular_file(ec)) {
+            ec.clear();
+            continue;
+        }
+        const auto path = item.path();
+        std::string ext = path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext != ".dds") continue;
+
+        std::string stem = path.stem().string();
+        std::string lowerStem = stem;
+        std::transform(lowerStem.begin(), lowerStem.end(), lowerStem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowerStem.size() <= 2) continue;
+        const std::string suffix = lowerStem.substr(lowerStem.size() - 2);
+        auto it = std::find(suffixes.begin(), suffixes.end(), suffix);
+        if (it == suffixes.end()) continue;
+
+        const std::string base = stem.substr(0, stem.size() - 2);
+        Group& group = groups[lowerStem.substr(0, lowerStem.size() - 2)];
+        if (group.base.empty()) group.base = base;
+        group.present[static_cast<std::size_t>(it - suffixes.begin())] = true;
+    }
+
+    for (const auto& [lowerBase, group] : groups) {
+        if (std::all_of(group.present.begin(), group.present.end(), [](bool v) { return v; })) result.push_back(group.base);
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
 static void addVertex(MeshData& mesh, const glm::vec3& p, const glm::vec3& n, const glm::vec2& uv) {
     mesh.vertices.push_back(p.x);
     mesh.vertices.push_back(p.y);
@@ -125,67 +180,88 @@ static void appendPlane(MeshData& mesh, float size, int divisions) {
 static void appendCylinder(MeshData& mesh, float radius, float height, int slices) {
     const unsigned int base = vertexCount(mesh);
     for (int y = 0; y <= 1; ++y) {
-        float py = (static_cast<float>(y) - 0.5f) * height;
+        const float v = static_cast<float>(y);
+        const float py = (v - 0.5f) * height;
         for (int x = 0; x <= slices; ++x) {
-            float u = static_cast<float>(x) / slices;
-            float a = u * glm::two_pi<float>();
-            glm::vec3 n(std::cos(a), 0, std::sin(a));
-            addVertex(mesh, glm::vec3(n.x * radius, py, n.z * radius), n, glm::vec2(u, static_cast<float>(y)));
+            const float u = static_cast<float>(x) / slices;
+            const float a = u * glm::two_pi<float>();
+            const glm::vec3 n(std::cos(a), 0.0f, std::sin(a));
+            addVertex(mesh, glm::vec3(n.x * radius, py, n.z * radius), n, glm::vec2(u, v));
         }
     }
-    int row = slices + 1;
+
+    const int row = slices + 1;
     for (int x = 0; x < slices; ++x) {
-        unsigned int a = base + static_cast<unsigned int>(x);
-        unsigned int b = a + 1;
-        unsigned int c = a + static_cast<unsigned int>(row);
-        unsigned int d = c + 1;
+        const unsigned int a = base + static_cast<unsigned int>(x);
+        const unsigned int b = a + 1;
+        const unsigned int c = a + static_cast<unsigned int>(row);
+        const unsigned int d = c + 1;
         addTri(mesh, a, c, b);
         addTri(mesh, b, c, d);
     }
 
-    unsigned int topCenter = vertexCount(mesh);
-    addVertex(mesh, glm::vec3(0, height * 0.5f, 0), glm::vec3(0, 1, 0), glm::vec2(0.5f, 0.5f));
-    unsigned int bottomCenter = vertexCount(mesh);
-    addVertex(mesh, glm::vec3(0, -height * 0.5f, 0), glm::vec3(0, -1, 0), glm::vec2(0.5f, 0.5f));
+    const unsigned int topCenter = vertexCount(mesh);
+    addVertex(mesh, glm::vec3(0.0f, height * 0.5f, 0.0f), glm::vec3(0, 1, 0), glm::vec2(0.5f, 0.5f));
+    const unsigned int bottomCenter = vertexCount(mesh);
+    addVertex(mesh, glm::vec3(0.0f, -height * 0.5f, 0.0f), glm::vec3(0, -1, 0), glm::vec2(0.5f, 0.5f));
+
     for (int x = 0; x < slices; ++x) {
-        float u0 = static_cast<float>(x) / slices;
-        float u1 = static_cast<float>(x + 1) / slices;
-        float a0 = u0 * glm::two_pi<float>();
-        float a1 = u1 * glm::two_pi<float>();
-        unsigned int t0 = vertexCount(mesh);
-        addVertex(mesh, glm::vec3(std::cos(a0) * radius, height * 0.5f, std::sin(a0) * radius), glm::vec3(0, 1, 0), glm::vec2(0, 0));
-        unsigned int t1 = vertexCount(mesh);
-        addVertex(mesh, glm::vec3(std::cos(a1) * radius, height * 0.5f, std::sin(a1) * radius), glm::vec3(0, 1, 0), glm::vec2(0, 0));
+        const float u0 = static_cast<float>(x) / slices;
+        const float u1 = static_cast<float>(x + 1) / slices;
+        const float a0 = u0 * glm::two_pi<float>();
+        const float a1 = u1 * glm::two_pi<float>();
+
+        const unsigned int t0 = vertexCount(mesh);
+        const glm::vec3 tp0(std::cos(a0) * radius, height * 0.5f, std::sin(a0) * radius);
+        addVertex(mesh, tp0, glm::vec3(0, 1, 0), glm::vec2(0.5f + 0.5f * tp0.x / radius, 0.5f + 0.5f * tp0.z / radius));
+        const unsigned int t1 = vertexCount(mesh);
+        const glm::vec3 tp1(std::cos(a1) * radius, height * 0.5f, std::sin(a1) * radius);
+        addVertex(mesh, tp1, glm::vec3(0, 1, 0), glm::vec2(0.5f + 0.5f * tp1.x / radius, 0.5f + 0.5f * tp1.z / radius));
         addTri(mesh, topCenter, t0, t1);
-        unsigned int b0 = vertexCount(mesh);
-        addVertex(mesh, glm::vec3(std::cos(a0) * radius, -height * 0.5f, std::sin(a0) * radius), glm::vec3(0, -1, 0), glm::vec2(0, 0));
-        unsigned int b1 = vertexCount(mesh);
-        addVertex(mesh, glm::vec3(std::cos(a1) * radius, -height * 0.5f, std::sin(a1) * radius), glm::vec3(0, -1, 0), glm::vec2(0, 0));
+
+        const unsigned int b0 = vertexCount(mesh);
+        const glm::vec3 bp0(std::cos(a0) * radius, -height * 0.5f, std::sin(a0) * radius);
+        addVertex(mesh, bp0, glm::vec3(0, -1, 0), glm::vec2(0.5f + 0.5f * bp0.x / radius, 0.5f - 0.5f * bp0.z / radius));
+        const unsigned int b1 = vertexCount(mesh);
+        const glm::vec3 bp1(std::cos(a1) * radius, -height * 0.5f, std::sin(a1) * radius);
+        addVertex(mesh, bp1, glm::vec3(0, -1, 0), glm::vec2(0.5f + 0.5f * bp1.x / radius, 0.5f - 0.5f * bp1.z / radius));
         addTri(mesh, bottomCenter, b1, b0);
     }
 }
 
 static void appendCone(MeshData& mesh, float radius, float height, int slices) {
     const unsigned int base = vertexCount(mesh);
-    for (int y = 0; y <= 1; ++y) {
-        float t = static_cast<float>(y);
-        float py = (t - 0.5f) * height;
-        float r = radius * (1.0f - t);
-        for (int x = 0; x <= slices; ++x) {
-            float u = static_cast<float>(x) / slices;
-            float a = u * glm::two_pi<float>();
-            glm::vec3 n = glm::normalize(glm::vec3(std::cos(a), radius / height, std::sin(a)));
-            addVertex(mesh, glm::vec3(std::cos(a) * r, py, std::sin(a) * r), n, glm::vec2(u, t));
-        }
+
+    for (int x = 0; x <= slices; ++x) {
+        const float u = static_cast<float>(x) / slices;
+        const float a = u * glm::two_pi<float>();
+        const glm::vec3 n = glm::normalize(glm::vec3(std::cos(a), radius / height, std::sin(a)));
+        addVertex(mesh, glm::vec3(std::cos(a) * radius, -height * 0.5f, std::sin(a) * radius), n, glm::vec2(u, 0.0f));
     }
-    int row = slices + 1;
+
+    const unsigned int apex = vertexCount(mesh);
+    addVertex(mesh, glm::vec3(0.0f, height * 0.5f, 0.0f), glm::normalize(glm::vec3(0.0f, radius / height, 0.0f)), glm::vec2(0.5f, 1.0f));
+
     for (int x = 0; x < slices; ++x) {
-        unsigned int a = base + static_cast<unsigned int>(x);
-        unsigned int b = a + 1;
-        unsigned int c = a + static_cast<unsigned int>(row);
-        unsigned int d = c + 1;
-        addTri(mesh, a, c, b);
-        addTri(mesh, b, c, d);
+        const unsigned int a = base + static_cast<unsigned int>(x);
+        const unsigned int b = a + 1;
+        addTri(mesh, a, apex, b);
+    }
+
+    const unsigned int bottomCenter = vertexCount(mesh);
+    addVertex(mesh, glm::vec3(0.0f, -height * 0.5f, 0.0f), glm::vec3(0, -1, 0), glm::vec2(0.5f, 0.5f));
+    for (int x = 0; x < slices; ++x) {
+        const float u0 = static_cast<float>(x) / slices;
+        const float u1 = static_cast<float>(x + 1) / slices;
+        const float a0 = u0 * glm::two_pi<float>();
+        const float a1 = u1 * glm::two_pi<float>();
+        const unsigned int v0 = vertexCount(mesh);
+        const glm::vec3 p0(std::cos(a0) * radius, -height * 0.5f, std::sin(a0) * radius);
+        addVertex(mesh, p0, glm::vec3(0, -1, 0), glm::vec2(0.5f + 0.5f * p0.x / radius, 0.5f - 0.5f * p0.z / radius));
+        const unsigned int v1 = vertexCount(mesh);
+        const glm::vec3 p1(std::cos(a1) * radius, -height * 0.5f, std::sin(a1) * radius);
+        addVertex(mesh, p1, glm::vec3(0, -1, 0), glm::vec2(0.5f + 0.5f * p1.x / radius, 0.5f - 0.5f * p1.z / radius));
+        addTri(mesh, bottomCenter, v1, v0);
     }
 }
 
@@ -242,6 +318,61 @@ static MeshData makeShape(int type) {
     return mesh;
 }
 
+struct ViewportFramebuffer {
+    GLuint fbo = 0;
+    GLuint color = 0;
+    GLuint depth = 0;
+    int width = 0;
+    int height = 0;
+};
+
+static ViewportFramebuffer g_viewportFramebuffer;
+
+static void DestroyViewportFramebuffer(ViewportFramebuffer& target) {
+    if (target.depth) glDeleteRenderbuffers(1, &target.depth);
+    if (target.color) glDeleteTextures(1, &target.color);
+    if (target.fbo) glDeleteFramebuffers(1, &target.fbo);
+    target = {};
+}
+
+static bool EnsureViewportFramebuffer(ViewportFramebuffer& target, int width, int height) {
+    width = std::max(1, width);
+    height = std::max(1, height);
+    if (target.fbo != 0 && target.width == width && target.height == height) return true;
+    DestroyViewportFramebuffer(target);
+
+    glGenFramebuffers(1, &target.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+
+    glGenTextures(1, &target.color);
+    glBindTexture(GL_TEXTURE_2D, target.color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.color, 0);
+
+    glGenRenderbuffers(1, &target.depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.depth);
+
+    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    if (!complete) {
+        DestroyViewportFramebuffer(target);
+        return false;
+    }
+
+    target.width = width;
+    target.height = height;
+    return true;
+}
+
 int main() {
     if (!glfwInit()) return -1;
 
@@ -269,14 +400,18 @@ int main() {
         return -1;
     }
 
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+
     std::vector<Material> materials;
     std::vector<PhysicalMaterialEntry> physicalMaterials;
     std::vector<std::string> matFiles;
+    std::vector<std::string> defFiles;
+    std::vector<std::string> ddsFiles;
     std::string currentFileName = "None";
     int currentMatIndex = 0;
     std::string currentDefFile = "scripts/materials.def";
     int currentPhysMatIndex = 0;
-    int shapeType = std::clamp(editorCfg.shapeType, 0, 7);
+    int shapeType = std::clamp(editorCfg.shapeType, 0, 6);
     int lightMode = editorCfg.lightMode;
     bool useNormal = editorCfg.useNormal;
     bool useGloss = editorCfg.useGloss;
@@ -284,6 +419,9 @@ int main() {
     bool useBump = editorCfg.useBump;
     float lightIntensity = 1.0f;
     float lightColor[3] = {1.0f, 1.0f, 1.0f};
+    double fpsTime = glfwGetTime();
+    int fpsFrames = 0;
+    float fpsValue = 0.0f;
 
     auto releaseMaterials = [&]() {
         for (auto& material : materials) material.releaseTextures();
@@ -291,31 +429,67 @@ int main() {
     };
 
     auto refreshData = [&](std::string& currFile, int& currIndex) {
+        ReleaseEditorUIPreview();
         releaseMaterials();
         matFiles.clear();
+        defFiles.clear();
+        ddsFiles.clear();
         physicalMaterials.clear();
         currentPhysMatIndex = 0;
         currentDefFile = "scripts/materials.def";
         physicalMaterialTypes = LoadPhysicalMaterialTypes();
 
-        fs::path scriptsDir = gameRootPath / "scripts";
-        if (fs::exists(scriptsDir) && fs::is_directory(scriptsDir)) {
-            std::error_code directoryError;
-            for (const auto& entry : fs::directory_iterator(scriptsDir, fs::directory_options::skip_permission_denied, directoryError)) {
-                if (directoryError) break;
-                std::error_code entryError;
-                if (!entry.is_regular_file(entryError) || entryError) continue;
-                std::string extension = entry.path().extension().string();
-                std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(c));
-                });
-                if (extension == ".mat") {
-                    std::string relativePath = fs::relative(entry.path(), gameRootPath, entryError).string();
-                    if (!entryError) matFiles.push_back(std::move(relativePath));
+        auto scanScripts = [&](const fs::path& directory, bool recursive) {
+            if (!fs::is_directory(directory)) return;
+            std::error_code scanEc;
+            if (recursive) {
+                for (fs::recursive_directory_iterator it(directory, fs::directory_options::skip_permission_denied, scanEc), end; it != end; it.increment(scanEc)) {
+                    if (scanEc) { scanEc.clear(); continue; }
+                    std::error_code entryEc;
+                    if (!it->is_regular_file(entryEc) || entryEc) continue;
+                    const std::string extension = ToLower(it->path().extension().string());
+                    if (extension != ".mat" && extension != ".def") continue;
+                    std::error_code relEc;
+                    const std::string relativePath = fs::relative(it->path(), gameRootPath, relEc).generic_string();
+                    if (relEc) continue;
+                    if (extension == ".mat") matFiles.push_back(relativePath);
+                    else defFiles.push_back(relativePath);
+                }
+            } else {
+                for (fs::directory_iterator it(directory, fs::directory_options::skip_permission_denied, scanEc), end; it != end; it.increment(scanEc)) {
+                    if (scanEc) { scanEc.clear(); continue; }
+                    std::error_code entryEc;
+                    if (!it->is_regular_file(entryEc) || entryEc) continue;
+                    const std::string extension = ToLower(it->path().extension().string());
+                    if (extension != ".mat" && extension != ".def") continue;
+                    std::error_code relEc;
+                    const std::string relativePath = fs::relative(it->path(), gameRootPath, relEc).generic_string();
+                    if (relEc) continue;
+                    if (extension == ".mat") matFiles.push_back(relativePath);
+                    else defFiles.push_back(relativePath);
                 }
             }
+        };
+
+        if (fs::exists(gameRootPath) && fs::is_directory(gameRootPath)) {
+            scanScripts(gameRootPath, false);
+            scanScripts(gameRootPath / "scripts", true);
         }
-        std::sort(matFiles.begin(), matFiles.end());
+
+        auto sortInsensitive = [](std::vector<std::string>& files) {
+            std::sort(files.begin(), files.end(), [](const std::string& a, const std::string& b) {
+                std::string al = a;
+                std::string bl = b;
+                std::transform(al.begin(), al.end(), al.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                std::transform(bl.begin(), bl.end(), bl.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return al < bl;
+            });
+        };
+        sortInsensitive(matFiles);
+        sortInsensitive(defFiles);
+
+        ClearWadArchives();
+        SaveConfig(editorCfg);
 
         if (!matFiles.empty()) {
             auto currentIt = std::find(matFiles.begin(), matFiles.end(), currFile);
@@ -331,25 +505,52 @@ int main() {
             currIndex = 0;
         }
 
-        fs::path defPath = scriptsDir / "materials.def";
-        if (!fs::exists(defPath)) defPath = gameRootPath / "materials.def";
-        if (fs::exists(defPath)) {
-            std::error_code relativeError;
-            currentDefFile = fs::relative(defPath, gameRootPath, relativeError).string();
+        if (!defFiles.empty()) {
+            auto currentDefIt = std::find(defFiles.begin(), defFiles.end(), currentDefFile);
+            if (currentDefIt == defFiles.end()) currentDefFile = defFiles.front();
             LoadAllPhysicalMaterials(currentDefFile, physicalMaterials);
+            currentPhysMatIndex = 0;
             if (!physicalMaterials.empty()) physicalMaterials[currentPhysMatIndex].updateBuffers();
         }
+
     };
 
     refreshData(currentFileName, currentMatIndex);
 
-    GLuint shader = LoadShaderFromMemory();
+    GLuint shader = LoadShader();
     if (shader == 0) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
-    GLuint skyboxID = LoadSkyboxAs2D("textures/sky");
+    GLuint skyboxTexture = 0;
+    fs::path envPath = gameRootPath / "gfx" / "env";
+    std::error_code envEc;
+    if (!fs::is_directory(envPath, envEc)) {
+        envEc.clear();
+        if (gameRootPath.filename() == "env" && fs::is_directory(gameRootPath, envEc)) envPath = gameRootPath;
+        else if (gameRootPath.filename() == "gfx" && fs::is_directory(gameRootPath / "env", envEc)) envPath = gameRootPath / "env";
+        else if (fs::is_directory(gameRootPath / "env", envEc)) envPath = gameRootPath / "env";
+    }
+    const std::vector<std::string> availableSkyboxes = FindDDSCubemapNames(envPath);
+
+    if (!editorCfg.skyboxName.empty()) {
+        skyboxTexture = LoadDDS_Cubemap((envPath / editorCfg.skyboxName).string());
+        if (skyboxTexture == 0) editorCfg.skyboxName.clear();
+    }
+
+    if (skyboxTexture == 0 && !availableSkyboxes.empty()) {
+        for (const std::string& name : availableSkyboxes) {
+            const GLuint loaded = LoadDDS_Cubemap((envPath / name).string());
+            if (loaded != 0) {
+                skyboxTexture = loaded;
+                editorCfg.skyboxName = name;
+                break;
+            }
+        }
+    }
+
+    GLuint skyboxShader = LoadSkyboxShader();
 
     struct ShaderUniforms {
         GLint diffuseMap;
@@ -357,7 +558,9 @@ int main() {
         GLint glossMap;
         GLint lumaMap;
         GLint bumpMap;
+        GLint detailMap;
         GLint skybox;
+        GLint useSkybox;
         GLint viewPos;
         GLint lightPos;
         GLint lightIntensity;
@@ -368,14 +571,20 @@ int main() {
         GLint reflectScale;
         GLint smoothness;
         GLint reliefScale;
+        GLint refractScale;
+        GLint aberrationScale;
         GLint model;
         GLint view;
         GLint projection;
         GLint useDiffuse;
         GLint useNormal;
+        GLint normalMapMode;
+        GLint diffuseIsSRGB;
         GLint useGloss;
         GLint useLuma;
         GLint useBump;
+        GLint useDetail;
+        GLint detailScale;
 
         explicit ShaderUniforms(GLuint program)
             : diffuseMap(glGetUniformLocation(program, "diffuseMap")),
@@ -383,7 +592,9 @@ int main() {
               glossMap(glGetUniformLocation(program, "glossMap")),
               lumaMap(glGetUniformLocation(program, "lumaMap")),
               bumpMap(glGetUniformLocation(program, "bumpMap")),
+              detailMap(glGetUniformLocation(program, "detailMap")),
               skybox(glGetUniformLocation(program, "skybox")),
+              useSkybox(glGetUniformLocation(program, "useSkybox")),
               viewPos(glGetUniformLocation(program, "viewPos")),
               lightPos(glGetUniformLocation(program, "lightPos")),
               lightIntensity(glGetUniformLocation(program, "lightIntensity")),
@@ -394,14 +605,20 @@ int main() {
               reflectScale(glGetUniformLocation(program, "reflectScale")),
               smoothness(glGetUniformLocation(program, "smoothness")),
               reliefScale(glGetUniformLocation(program, "reliefScale")),
+              refractScale(glGetUniformLocation(program, "refractScale")),
+              aberrationScale(glGetUniformLocation(program, "aberrationScale")),
               model(glGetUniformLocation(program, "model")),
               view(glGetUniformLocation(program, "view")),
               projection(glGetUniformLocation(program, "projection")),
               useDiffuse(glGetUniformLocation(program, "useDiffuse")),
               useNormal(glGetUniformLocation(program, "useNormal")),
+              normalMapMode(glGetUniformLocation(program, "normalMapMode")),
+              diffuseIsSRGB(glGetUniformLocation(program, "diffuseIsSRGB")),
               useGloss(glGetUniformLocation(program, "useGloss")),
               useLuma(glGetUniformLocation(program, "useLuma")),
-              useBump(glGetUniformLocation(program, "useBump")) {}
+              useBump(glGetUniformLocation(program, "useBump")),
+              useDetail(glGetUniformLocation(program, "useDetail")),
+              detailScale(glGetUniformLocation(program, "detailScale")) {}
     };
     const ShaderUniforms uniforms(shader);
 
@@ -413,9 +630,9 @@ int main() {
     glGenBuffers(1, &EBO_cube);
     glBindVertexArray(VAO_cube);
     glBindBuffer(GL_ARRAY_BUFFER, VBO_cube);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kBuiltinCubeVertices), kBuiltinCubeVertices, GL_STATIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO_cube);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(kBuiltinCubeIndices), kBuiltinCubeIndices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
@@ -425,7 +642,7 @@ int main() {
     glBindVertexArray(0);
 
     GLuint VAO_sphere = 0, VBO_sphere = 0, EBO_sphere = 0;
-    Sphere sphere(32, 32);
+    BuiltinSphere sphere(32, 32);
     glGenVertexArrays(1, &VAO_sphere);
     glGenBuffers(1, &VBO_sphere);
     glGenBuffers(1, &EBO_sphere);
@@ -442,8 +659,8 @@ int main() {
     glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
-    std::vector<MeshGPU> customMeshes(6);
-    for (int i = 2; i <= 7; ++i) {
+    std::vector<MeshGPU> customMeshes(5);
+    for (int i = 2; i <= 6; ++i) {
         MeshData mesh = makeShape(i);
         customMeshes[static_cast<std::size_t>(i - 2)].upload(mesh);
     }
@@ -453,6 +670,14 @@ int main() {
     float roughness = 0.5f;
     static float zoom = 2.0f;
     glm::vec3 lightPos(2.0f, 2.0f, 2.0f);
+    bool flightMode = false;
+    bool zWasDown = false;
+    glm::vec3 flightPosition(0.0f, 0.0f, 2.0f);
+    float flightYaw = 0.0f;
+    float flightPitch = 0.0f;
+    double flightLastX = 0.0;
+    double flightLastY = 0.0;
+    double previousFrameTime = glfwGetTime();
 
     glUseProgram(shader);
     glUniform1i(uniforms.diffuseMap, 0);
@@ -460,16 +685,23 @@ int main() {
     glUniform1i(uniforms.glossMap, 2);
     glUniform1i(uniforms.lumaMap, 3);
     glUniform1i(uniforms.bumpMap, 5);
+    glUniform1i(uniforms.detailMap, 6);
     glUniform1i(uniforms.skybox, 4);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
-    SetupModernDarkStyle();
+    InitUI();
 
+    bool hWasDown = false;
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        ImGuiIO& hotkeyIO = ImGui::GetIO();
+        const bool hDown = glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS;
+        if (hDown && !hWasDown && !hotkeyIO.WantTextInput && !hotkeyIO.WantCaptureKeyboard) ToggleEditorPanels();
+        hWasDown = hDown;
 
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) || glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_FALSE) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -484,19 +716,67 @@ int main() {
         glfwGetWindowSize(window, &window_w, &window_h);
         glfwGetFramebufferSize(window, &framebuffer_w, &framebuffer_h);
 
-        DrawEditorUI(window_w, window_h, editorCfg, materials, physicalMaterials, matFiles, currentFileName, currentMatIndex,
+        DrawEditorUI(window_w, window_h, editorCfg, materials, physicalMaterials, matFiles, defFiles, ddsFiles, currentFileName, currentMatIndex,
                      currentDefFile, currentPhysMatIndex, shapeType, lightMode, useNormal, useGloss, useLuma, useBump,
-                     lightIntensity, lightColor, skyboxID, refreshData);
-
-        ImGui::Render();
+                     lightIntensity, lightColor, skyboxTexture, refreshData);
 
         static float yaw = 0.0f;
         static float pitch = 0.0f;
         static bool isDragging = false;
         static double lastX = 0.0, lastY = 0.0;
+        ViewportFramebuffer& viewportFramebuffer = g_viewportFramebuffer;
 
         ImGuiIO& io = ImGui::GetIO();
-        if (!io.WantCaptureMouse) {
+        const bool zDown = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
+        if (zDown && !zWasDown && !io.WantTextInput && !io.WantCaptureKeyboard && (flightMode || IsEditorViewportHovered())) {
+            flightMode = !flightMode;
+            if (flightMode) {
+                const float camX = std::sin(yaw) * std::cos(pitch) * zoom;
+                const float camY = std::sin(pitch) * zoom;
+                const float camZ = std::cos(yaw) * std::cos(pitch) * zoom;
+                flightPosition = glm::vec3(camX, camY, camZ);
+                flightYaw = yaw;
+                flightPitch = pitch;
+                glfwGetCursorPos(window, &flightLastX, &flightLastY);
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            } else {
+                const float distance = std::max(glm::length(flightPosition), 0.05f);
+                zoom = editorCfg.unlimitedZoom ? distance : std::max(distance, 1.6f);
+                yaw = std::atan2(flightPosition.x, flightPosition.z);
+                pitch = std::asin(std::clamp(flightPosition.y / distance, -1.0f, 1.0f));
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
+        }
+        zWasDown = zDown;
+
+        const double currentFrameTime = glfwGetTime();
+        const float frameDelta = static_cast<float>(std::min(currentFrameTime - previousFrameTime, 0.1));
+        previousFrameTime = currentFrameTime;
+
+        if (flightMode) {
+            double currX = 0.0, currY = 0.0;
+            glfwGetCursorPos(window, &currX, &currY);
+            flightYaw -= static_cast<float>(currX - flightLastX) * 0.0035f;
+            flightPitch -= static_cast<float>(currY - flightLastY) * 0.0035f;
+            flightPitch = std::clamp(flightPitch, -1.54f, 1.54f);
+            flightLastX = currX;
+            flightLastY = currY;
+
+            glm::vec3 forward(
+                std::sin(flightYaw) * std::cos(flightPitch),
+                std::sin(flightPitch),
+                std::cos(flightYaw) * std::cos(flightPitch));
+            forward = glm::normalize(forward);
+            glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+            glm::vec3 up(0.0f, 1.0f, 0.0f);
+            float moveSpeed = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 6.0f : 2.5f;
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) flightPosition += forward * moveSpeed * frameDelta;
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) flightPosition -= forward * moveSpeed * frameDelta;
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) flightPosition -= right * moveSpeed * frameDelta;
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) flightPosition += right * moveSpeed * frameDelta;
+            if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) flightPosition += up * moveSpeed * frameDelta;
+            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) flightPosition -= up * moveSpeed * frameDelta;
+        } else if (IsEditorViewportHovered()) {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 if (!isDragging) {
                     isDragging = true;
@@ -524,21 +804,61 @@ int main() {
             } else {
                 isDragging = false;
             }
-            zoom = std::clamp(zoom, 0.5f, 10.0f);
+            if (io.MouseWheel != 0.0f) zoom -= io.MouseWheel * 0.35f;
+            const float minZoom = editorCfg.unlimitedZoom ? 0.05f : 1.6f;
+            zoom = std::clamp(zoom, minZoom, 10.0f);
+        } else {
+            isDragging = false;
         }
 
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        float viewport_x = 0.0f;
+        float viewport_y = 0.0f;
+        float viewport_w = static_cast<float>(window_w);
+        float viewport_h = static_cast<float>(window_h);
+        GetEditorViewportRect(viewport_x, viewport_y, viewport_w, viewport_h);
+
+        const float scale_x = window_w > 0 ? static_cast<float>(framebuffer_w) / static_cast<float>(window_w) : 1.0f;
+        const float scale_y = window_h > 0 ? static_cast<float>(framebuffer_h) / static_cast<float>(window_h) : 1.0f;
+        const int viewportPixelW = std::max(10, static_cast<int>(std::round(viewport_w * scale_x)));
+        const int viewportPixelH = std::max(10, static_cast<int>(std::round(viewport_h * scale_y)));
+        const bool viewportReady = EnsureViewportFramebuffer(viewportFramebuffer, viewportPixelW, viewportPixelH);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, viewportReady ? viewportFramebuffer.fbo : 0);
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, viewportReady ? viewportFramebuffer.width : framebuffer_w, viewportReady ? viewportFramebuffer.height : framebuffer_h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shader);
 
-        glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_2D, skyboxID);
-
-        float camX = std::sin(yaw) * std::cos(pitch) * zoom;
-        float camY = std::sin(pitch) * zoom;
-        float camZ = std::cos(yaw) * std::cos(pitch) * zoom;
-        glm::vec3 cameraPos(camX, camY, camZ);
-        glm::vec3 finalLightPos = (lightMode == 0) ? cameraPos : lightPos;
+        glm::vec3 cameraPos;
+        glm::vec3 cameraTarget;
+        glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
+        if (flightMode) {
+            const glm::vec3 forward(
+                std::sin(flightYaw) * std::cos(flightPitch),
+                std::sin(flightPitch),
+                std::cos(flightYaw) * std::cos(flightPitch));
+            cameraPos = flightPosition;
+            cameraTarget = cameraPos + glm::normalize(forward);
+        } else {
+            const float camX = std::sin(yaw) * std::cos(pitch) * zoom;
+            const float camY = std::sin(pitch) * zoom;
+            const float camZ = std::cos(yaw) * std::cos(pitch) * zoom;
+            cameraPos = glm::vec3(camX, camY, camZ);
+            cameraTarget = glm::vec3(0.0f);
+        }
+        glm::vec3 finalLightPos = lightPos;
+        if (lightMode == 0) {
+            finalLightPos = cameraPos;
+        } else if (lightMode == 2) {
+            const float angle = static_cast<float>(glfwGetTime()) * editorCfg.dynamicLightSpeed;
+            const float radius = std::max(1.0f, editorCfg.dynamicLightRadius);
+            finalLightPos = glm::vec3(
+                std::cos(angle) * radius,
+                1.2f + std::sin(angle * 0.7f) * 0.8f,
+                std::sin(angle) * radius
+            );
+        }
 
         glUniform3fv(uniforms.viewPos, 1, &cameraPos.x);
         glUniform3fv(uniforms.lightPos, 1, &finalLightPos.x);
@@ -552,27 +872,57 @@ int main() {
             glUniform1f(uniforms.reflectScale, materials[currentMatIndex].reflectScale);
             glUniform1f(uniforms.smoothness, materials[currentMatIndex].smoothness);
             glUniform1f(uniforms.reliefScale, materials[currentMatIndex].reliefScale);
+            glUniform1f(uniforms.refractScale, materials[currentMatIndex].refractScale);
+            glUniform1f(uniforms.aberrationScale, materials[currentMatIndex].aberrationScale);
         } else {
             glUniform1f(uniforms.reflectScale, 0.3f);
             glUniform1f(uniforms.smoothness, 1.0f);
             glUniform1f(uniforms.reliefScale, 0.0f);
+            glUniform1f(uniforms.refractScale, 0.0f);
+            glUniform1f(uniforms.aberrationScale, 0.0f);
         }
 
-        glm::mat4 view = glm::lookAt(cameraPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        float aspectRatio = framebuffer_h > 0 ? static_cast<float>(framebuffer_w) / static_cast<float>(framebuffer_h) : 1.333f;
-        glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 100.0f);
+        glm::mat4 view = glm::lookAt(cameraPos, cameraTarget, cameraUp);
+        const float aspectRatio = viewport_h > 0.0f ? viewport_w / viewport_h : 1.333f;
+        glm::mat4 proj = glm::perspective(glm::radians(editorCfg.fov), aspectRatio, 0.1f, 100.0f);
         glm::mat4 model(1.0f);
 
-        glViewport(0, 0, framebuffer_w, framebuffer_h);
+        if (skyboxTexture != 0 && skyboxShader != 0) {
+            glUseProgram(skyboxShader);
+            const glm::mat4 skyboxView = glm::mat4(glm::mat3(view));
+            glUniformMatrix4fv(glGetUniformLocation(skyboxShader, "view"), 1, GL_FALSE, glm::value_ptr(skyboxView));
+            glUniformMatrix4fv(glGetUniformLocation(skyboxShader, "projection"), 1, GL_FALSE, glm::value_ptr(proj));
+            glUniform1i(glGetUniformLocation(skyboxShader, "skybox"), 4);
+            glActiveTexture(GL_TEXTURE4);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+            glDepthFunc(GL_LEQUAL);
+            glDepthMask(GL_FALSE);
+            glBindVertexArray(VAO_cube);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
+            glDepthMask(GL_TRUE);
+            glDepthFunc(GL_LESS);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+        }
+
+        glUseProgram(shader);
+        if (skyboxTexture != 0) {
+            glActiveTexture(GL_TEXTURE4);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+        }
         glUniformMatrix4fv(uniforms.view, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(uniforms.projection, 1, GL_FALSE, glm::value_ptr(proj));
         glUniformMatrix4fv(uniforms.model, 1, GL_FALSE, glm::value_ptr(model));
 
         glUniform1i(uniforms.useDiffuse, 0);
         glUniform1i(uniforms.useNormal, 0);
+        glUniform1i(uniforms.normalMapMode, 0);
+        glUniform1i(uniforms.diffuseIsSRGB, 0);
         glUniform1i(uniforms.useGloss, 0);
         glUniform1i(uniforms.useLuma, 0);
         glUniform1i(uniforms.useBump, 0);
+        glUniform1i(uniforms.useDetail, 0);
+        glUniform2f(uniforms.detailScale, 1.0f, 1.0f);
+        glUniform1i(uniforms.useSkybox, skyboxTexture != 0 ? 1 : 0);
 
         if (!materials.empty() && currentMatIndex >= 0 && static_cast<std::size_t>(currentMatIndex) < materials.size()) {
             Material& mat = materials[currentMatIndex];
@@ -580,12 +930,19 @@ int main() {
             if (diffuseIt != mat.textures.end() && diffuseIt->second != 0) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, diffuseIt->second);
+                const TextureFormatInfo diffuseInfo = GetTextureFormatInfo(diffuseIt->second);
+                // вадовская дифузка уже загружены с декодированными цветами
+                // НЕ НАДО ПРОПУСКАТЬ ВАДНИКИ ЧЕРЕЗ SRGB!
+                const bool diffuseNeedsNoDecode = !diffuseInfo.valid || diffuseInfo.srgb;
+                glUniform1i(uniforms.diffuseIsSRGB, diffuseNeedsNoDecode ? 1 : 0);
                 glUniform1i(uniforms.useDiffuse, 1);
             }
             auto normalIt = mat.textures.find("normal");
             if (normalIt != mat.textures.end() && normalIt->second != 0) {
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, normalIt->second);
+                const TextureFormatInfo normalInfo = GetTextureFormatInfo(normalIt->second);
+                glUniform1i(uniforms.normalMapMode, normalInfo.bc5 ? 1 : 0);
                 glUniform1i(uniforms.useNormal, useNormal ? 1 : 0);
             }
             auto glossIt = mat.textures.find("gloss");
@@ -606,6 +963,23 @@ int main() {
                 glBindTexture(GL_TEXTURE_2D, bumpIt->second);
                 glUniform1i(uniforms.useBump, useBump ? 1 : 0);
             }
+            auto detailIt = mat.textures.find("detail");
+            if (detailIt != mat.textures.end() && detailIt->second != 0) {
+                glActiveTexture(GL_TEXTURE6);
+                glBindTexture(GL_TEXTURE_2D, detailIt->second);
+                glUniform1i(uniforms.useDetail, 1);
+
+                float detailX = 1.0f;
+                float detailY = 1.0f;
+                std::istringstream detailStream(mat.detailScale);
+                if (!(detailStream >> detailX)) {
+                    detailX = 1.0f;
+                }
+                if (!(detailStream >> detailY)) {
+                    detailY = detailX;
+                }
+                glUniform2f(uniforms.detailScale, detailX, detailY);
+            }
         }
 
         if (shapeType == 0) {
@@ -614,21 +988,46 @@ int main() {
         } else if (shapeType == 1) {
             glBindVertexArray(VAO_sphere);
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphere.indices.size()), GL_UNSIGNED_INT, nullptr);
-        } else if (shapeType >= 2 && shapeType <= 7) {
+        } else if (shapeType >= 2 && shapeType <= 6) {
             customMeshes[static_cast<std::size_t>(shapeType - 2)].draw();
         }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, framebuffer_w, framebuffer_h);
+        glClearColor(editorCfg.backgroundColor[0], editorCfg.backgroundColor[1], editorCfg.backgroundColor[2], 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        if (viewportReady) DrawEditorViewportTexture(viewportFramebuffer.color);
+
+        ++fpsFrames;
+        const double fpsNow = glfwGetTime();
+        if (fpsNow - fpsTime >= 0.25) {
+            fpsValue = static_cast<float>(fpsFrames / (fpsNow - fpsTime));
+            fpsFrames = 0;
+            fpsTime = fpsNow;
+        }
+        if (editorCfg.showFps) DrawEditorViewportFPS(fpsValue);
+        DrawEditorViewportFreeCamHint();
+
+        ImGui::Render();
+
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, framebuffer_w, framebuffer_h);
 
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
     }
 
+    DestroyViewportFramebuffer(g_viewportFramebuffer);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    ReleaseEditorUIPreview();
     for (auto& material : materials) material.releaseTextures();
     for (auto& mesh : customMeshes) mesh.release();
-    if (skyboxID != 0) glDeleteTextures(1, &skyboxID);
+    if (skyboxTexture != 0) glDeleteTextures(1, &skyboxTexture);
+    if (skyboxShader != 0) glDeleteProgram(skyboxShader);
     if (shader != 0) glDeleteProgram(shader);
     glDeleteBuffers(1, &EBO_cube);
     glDeleteBuffers(1, &VBO_cube);

@@ -3,6 +3,7 @@
 #include <vector>
 #include <map>
 #include <filesystem>
+#include <cstdint>
 #include <glad/glad.h>
 
 namespace fs = std::filesystem;
@@ -51,10 +52,54 @@ struct PhysicalMaterialEntry {
 
 std::vector<std::string> LoadPhysicalMaterialTypes();
 GLuint LoadDDSTexture(const std::string& path);
+void ReleaseDDSTexture(GLuint texture);
+GLuint LoadTextureReference(const std::string& reference);
 GLuint LoadDDS_Cubemap(const std::string& path);
-GLuint LoadSkyboxAs2D(const std::string& path);
 
 void LoadAllMaterials(const std::string& path, std::vector<Material>& materials);
 void SaveAllMaterials(const std::string& path, const std::vector<Material>& materials);
 void LoadAllPhysicalMaterials(const std::string& path, std::vector<PhysicalMaterialEntry>& physMats);
 void SaveAllPhysicalMaterials(const std::string& path, const std::vector<PhysicalMaterialEntry>& physMats);
+
+struct TexturePreviewInfo {
+    GLuint texture = 0;
+    int width = 0;
+    int height = 0;
+    bool valid = false;
+    bool cachedDDS = false;
+};
+
+struct WadTexture {
+    std::string name;
+    int width = 0;
+    int height = 0;
+    std::uint32_t pixelOffset = 0;
+    std::uint32_t paletteOffset = 0;
+};
+
+struct WadArchive {
+    std::string relativePath;
+    std::string displayName;
+    std::vector<WadTexture> textures;
+};
+
+
+struct TextureFormatInfo {
+    bool valid = false;
+    bool compressed = false;
+    bool srgb = false;
+    bool bc5 = false;
+    int channels = 4;
+};
+
+TextureFormatInfo GetTextureFormatInfo(GLuint texture);
+
+TexturePreviewInfo LoadTexturePreview(const std::string& reference);
+void ReleaseTexturePreview(TexturePreviewInfo& preview);
+const std::vector<WadArchive>& GetWadArchives();
+bool AddWadArchive(const std::string& relativePath);
+void LoadWadArchives(const std::vector<std::string>& paths);
+void ScanAndLoadAllWads();
+void ClearWadArchives();
+std::vector<std::string> GetLoadedWadPaths();
+std::string MakeWadTextureReference(const WadArchive& wad, const WadTexture& texture);
