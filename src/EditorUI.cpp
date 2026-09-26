@@ -357,6 +357,7 @@ void SelectDef(const std::string& path, std::vector<PhysicalMaterialEntry>& phys
     if (currentPhysMatIndex >= 0) physicalMaterials[currentPhysMatIndex].updateBuffers();
 }
 
+
 void AssignTexture(Material& material, const char* field, const std::string& reference) {
     char* target = nullptr;
     std::size_t size = 0;
@@ -367,9 +368,17 @@ void AssignTexture(Material& material, const char* field, const std::string& ref
     else if (std::strcmp(field, "bump") == 0) { target = material.bumpPath; size = sizeof(material.bumpPath); }
     else if (std::strcmp(field, "detail") == 0) { target = material.detailPath; size = sizeof(material.detailPath); }
     if (!target || size == 0) return;
-    std::strncpy(target, reference.c_str(), size - 1);
+
+    std::string pathWithoutExtension = reference;
+    fs::path p(reference);
+    if (p.has_extension()) {
+        pathWithoutExtension = (p.parent_path() / p.stem()).generic_string();
+    }
+
+    std::strncpy(target, pathWithoutExtension.c_str(), size - 1);
     target[size - 1] = '\0';
 }
+
 
 void AssignSelected(Material* material, const char* field) {
     if (!material || g_preview.reference.empty() || !g_preview.info.valid || g_preview.info.texture == 0) return;
