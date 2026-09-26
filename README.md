@@ -46,7 +46,7 @@ Requirements:
 
 1. Clone the repository with submodules:
    ```bash
-   git clone --recursive <repository-url>
+   git clone --recursive https://github.com/hgruntt/MatEdit
    cd MaterialEditor
    ```
 2. Create a build directory and configure the project:
@@ -114,7 +114,7 @@ Distributed under the GPL-3.0 License. See `LICENSE` for details.
 
 1. Клонируйте репозиторий вместе с подмодулями:
    ```bash
-   git clone --recursive <repository-url>
+   git clone --recursive https://github.com/hgruntt/MatEdit
    cd MaterialEditor
    ```
 2. Создайте директорию сборки и сгенерируйте проект:
