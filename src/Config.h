@@ -1,7 +1,6 @@
 #pragma once
 #include <string>
 #include <vector>
-#define _CRT_SECURE_NO_WARNINGS
 
 struct EditorConfig {
     std::string gamePath = "";
