@@ -14,7 +14,6 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <gli/gli.hpp>
-#define _CRT_SECURE_NO_WARNINGS
 
 fs::path gameRootPath = "";
 std::vector<std::string> physicalMaterialTypes = {"default"};

@@ -103,6 +103,10 @@ target_include_directories(MaterialEditor PRIVATE
     )
 
 if(WIN32)
+    target_compile_definitions(MaterialEditor PRIVATE
+        NOMINMAX
+        _CRT_SECURE_NO_WARNINGS
+    )
     target_link_libraries(MaterialEditor PRIVATE
         opengl32
         gdi32
