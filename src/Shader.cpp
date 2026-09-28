@@ -46,6 +46,7 @@ uniform int useSkybox;
 uniform int useDiffuse;
 uniform int useNormal;
 uniform int normalMapMode;
+uniform int hasNormalMap;
 uniform int diffuseIsSRGB;
 uniform int useGloss;
 uniform int useLuma;
@@ -63,13 +64,13 @@ uniform float reliefScale;
 uniform float refractScale;
 uniform float aberrationScale;
 uniform vec2 detailScale;
+uniform vec2 textureScale;
 
 float ComputeLOD(const vec2 texCoord) {
     vec2 dx = dFdx(texCoord);
     vec2 dy = dFdy(texCoord);
     vec2 mag = (abs(dx) + abs(dy)) * vec2(textureSize(bumpMap, 0));
-    float lod = log2(max(mag.x, mag.y));
-    return clamp(lod, 0.0, 8.0);
+    return log2(max(mag.x, mag.y));
 }
 
 float GetHeightMapSample(const vec2 texCoord) {
@@ -88,13 +89,24 @@ float GetDepthMapSampleLOD(const vec2 texCoord, float lod) {
     return 1.0 - GetHeightMapSampleLOD(texCoord, lod);
 }
 
+float GetPrimeXTNormalZ(const vec2 texCoord) {
+    if (hasNormalMap == 0) return 1.0;
+    vec4 sampleValue = texture(normalMap, texCoord);
+    if (normalMapMode == 1) {
+        vec2 xy = sampleValue.rg * 2.0 - 1.0;
+        float z = 1.0 - min(dot(xy, xy), 1.0);
+        return normalize(vec3(xy, z)).z;
+    }
+    return normalize(sampleValue.rgb * 2.0 - 1.0).z;
+}
+
 vec2 ParallaxOffsetMap(const vec2 texCoord, const vec3 viewVec) {
     float bumpScale = reliefScale * 0.1;
     vec3 newCoords = vec3(texCoord, 0.0);
     float lod = ComputeLOD(texCoord);
-    float nz = max(abs(viewVec.z), 0.05);
 
     for (int i = 0; i < 15; ++i) {
+        float nz = GetPrimeXTNormalZ(newCoords.xy);
         float h = GetHeightMapSampleLOD(newCoords.xy, lod);
         float height = h * bumpScale;
         newCoords += (height - newCoords.z) * nz * vec3(viewVec.x, -viewVec.y, viewVec.z);
@@ -106,15 +118,10 @@ vec2 ParallaxOffsetMap(const vec2 texCoord, const vec3 viewVec) {
 vec3 ParallaxOcclusionMap(const vec2 texCoord, const vec3 viewVec) {
     const float PARALLAX_STEPS = 15.0;
     float stepSize = 1.0 / PARALLAX_STEPS;
-    float bumpScale = 0.2 * clamp(reliefScale, 0.0, 1.0);
+    float bumpScale = 0.2 * reliefScale;
     float lod = ComputeLOD(texCoord);
 
-    if (bumpScale <= 0.0) {
-        return vec3(texCoord, 0.0);
-    }
-
-    float viewZ = max(viewVec.z, 0.05);
-    vec2 delta = bumpScale * vec2(viewVec.x, -viewVec.y) / (viewZ * PARALLAX_STEPS);
+    vec2 delta = bumpScale * vec2(viewVec.x, -viewVec.y) / (viewVec.z * PARALLAX_STEPS);
 
     float depth0 = GetDepthMapSample(texCoord);
     float currentLayer = 1.0 - stepSize;
@@ -147,10 +154,6 @@ vec3 ParallaxOcclusionMap(const vec2 texCoord, const vec3 viewVec) {
         }
 
         float denom = delta1 - delta0;
-        if (abs(denom) < 0.00001) {
-            break;
-        }
-
         t = (layer0 * delta1 - layer1 * delta0) / denom;
         offsetBest = -t * intersect.xy + intersect.zw;
 
@@ -166,17 +169,6 @@ vec3 ParallaxOcclusionMap(const vec2 texCoord, const vec3 viewVec) {
     }
 
     return vec3(offsetBest, t);
-}
-
-vec3 BuildBumpNormal(const vec2 texCoord) {
-    vec2 texel = 1.0 / max(vec2(textureSize(bumpMap, 0)), vec2(1.0));
-    float hL = texture(bumpMap, texCoord - vec2(texel.x, 0.0)).r;
-    float hR = texture(bumpMap, texCoord + vec2(texel.x, 0.0)).r;
-    float hD = texture(bumpMap, texCoord - vec2(0.0, texel.y)).r;
-    float hU = texture(bumpMap, texCoord + vec2(0.0, texel.y)).r;
-    vec2 gradient = vec2(hR - hL, hU - hD) * 0.5;
-    float strength = clamp(reliefScale, 0.0, 1.0) * 8.0;
-    return normalize(vec3(-gradient * strength, 1.0));
 }
 
 float SmoothnessToRoughness(float value) {
@@ -232,12 +224,13 @@ void main() {
     vec3 lightDirTangent = normalize(transpose(TBN) * L);
     vec3 viewDirTangent = normalize(transpose(TBN) * V);
 
-    vec2 sampledTexCoord = TexCoord;
+    vec2 tiledTexCoord = TexCoord * textureScale;
+    vec2 sampledTexCoord = tiledTexCoord;
     float shadowFactor = 1.0;
 
     if (useBump == 1 && reliefScale > 0.0) {
         vec3 tangentView = normalize(viewDirTangent);
-        vec3 pomResult = ParallaxOcclusionMap(TexCoord, tangentView);
+        vec3 pomResult = ParallaxOcclusionMap(tiledTexCoord, tangentView);
         sampledTexCoord = pomResult.xy;
         shadowFactor = 1.0;
     }
@@ -249,7 +242,7 @@ void main() {
     }
 
     if (useDetail == 1) {
-        vec3 detail = texture(detailMap, TexCoord * detailScale).rgb;
+        vec3 detail = texture(detailMap, tiledTexCoord * detailScale).rgb;
         baseColor *= detail * 2.0;
     }
 
@@ -269,12 +262,7 @@ void main() {
         }
     }
 
-    if (useBump == 1) {
-        vec3 bumpNormal = BuildBumpNormal(sampledTexCoord);
-        tangentSurfaceNormal = normalize(tangentSurfaceNormal + vec3(bumpNormal.xy, 0.0));
-    }
-
-    if (useNormal == 1 || useBump == 1) {
+    if (useNormal == 1) {
         N = normalize(TBN * tangentSurfaceNormal);
     }
 
@@ -329,6 +317,9 @@ void main() {
     vec3 reflection = vec3(0.0);
     if (useSkybox == 1) {
         vec3 reflectDir = normalize(reflect(I, N));
+        if (abs(reflectDir.y) > max(abs(reflectDir.x), abs(reflectDir.z))) {
+            reflectDir = vec3(-reflectDir.z, reflectDir.y, reflectDir.x);
+        }
         vec3 reflected = texture(skybox, reflectDir).rgb;
         float reflectAmount = max(reflectScale, 0.0) * max(glossSmoothness, 0.0);
         reflection = reflected * F * reflectAmount;
@@ -339,9 +330,15 @@ void main() {
             vec3 refractDir = normalize(refract(I, N, eta));
             float chroma = max(aberrationScale, 0.0) * 0.02;
             vec3 refracted;
-            refracted.r = texture(skybox, normalize(refractDir + vec3(chroma, 0.0, 0.0))).r;
-            refracted.g = texture(skybox, refractDir).g;
-            refracted.b = texture(skybox, normalize(refractDir - vec3(chroma, 0.0, 0.0))).b;
+            vec3 refractDirR = normalize(refractDir + vec3(chroma, 0.0, 0.0));
+            vec3 refractDirG = refractDir;
+            vec3 refractDirB = normalize(refractDir - vec3(chroma, 0.0, 0.0));
+            if (abs(refractDirR.y) > max(abs(refractDirR.x), abs(refractDirR.z))) refractDirR = vec3(-refractDirR.z, refractDirR.y, refractDirR.x);
+            if (abs(refractDirG.y) > max(abs(refractDirG.x), abs(refractDirG.z))) refractDirG = vec3(-refractDirG.z, refractDirG.y, refractDirG.x);
+            if (abs(refractDirB.y) > max(abs(refractDirB.x), abs(refractDirB.z))) refractDirB = vec3(-refractDirB.z, refractDirB.y, refractDirB.x);
+            refracted.r = texture(skybox, refractDirR).r;
+            refracted.g = texture(skybox, refractDirG).g;
+            refracted.b = texture(skybox, refractDirB).b;
             reflection += refracted * refractAmount;
         }
     }
@@ -417,7 +414,7 @@ uniform samplerCube skybox;
 
 void main() {
     vec3 direction = TexCoord;
-    if (direction.y > abs(direction.x) && direction.y > abs(direction.z)) {
+    if (abs(direction.y) > max(abs(direction.x), abs(direction.z))) {
         direction = vec3(-direction.z, direction.y, direction.x);
     }
     FragColor = texture(skybox, direction);

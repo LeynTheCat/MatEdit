@@ -8,6 +8,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external")
 
+set(STB_INCLUDE_DIR "${EXTERNAL_DIR}/stb")
+if(NOT EXISTS "${STB_INCLUDE_DIR}/stb_image.h")
+    include(FetchContent)
+    FetchContent_Declare(
+        stb
+        GIT_REPOSITORY https://github.com/nothings/stb.git
+        GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
+    )
+    FetchContent_GetProperties(stb)
+    if(NOT stb_POPULATED)
+        FetchContent_Populate(stb)
+    endif()
+    set(STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
+endif()
+
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -61,6 +76,10 @@ add_executable(MaterialEditor
     src/MaterialSystem.cpp
     src/Config.cpp
     src/Shader.cpp
+    src/ImageLoader.cpp
+    src/Skybox.cpp
+    src/PostProcess.cpp
+    src/Contributors.cpp
     src/main.cpp
 )
 
@@ -76,6 +95,7 @@ target_include_directories(MaterialEditor PRIVATE
     "${EXTERNAL_DIR}/imgui/backends"
     "${EXTERNAL_DIR}/glm"
     "${EXTERNAL_DIR}/gli"
+    "${STB_INCLUDE_DIR}"
 )
 
     target_link_libraries(MaterialEditor PRIVATE
@@ -92,6 +112,7 @@ if(WIN32)
         user32
         shell32
         imm32
+        winhttp
     )
 elseif(UNIX)
     target_link_libraries(MaterialEditor PRIVATE
@@ -129,5 +150,11 @@ endif()
 
 set_target_properties(MaterialEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_custom_command(TARGET MaterialEditor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/CONTRIBUTORS.txt"
+        "$<TARGET_FILE_DIR:MaterialEditor>/CONTRIBUTORS.txt"
 )
 
