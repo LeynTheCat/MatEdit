@@ -6,6 +6,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - SHA256SUMS
   workflow_dispatch:
 
 permissions:
@@ -220,6 +222,28 @@ jobs:
           name: MatEdit-windows-x64-msvc
           path: release
 
+      - name: Generate SHA256SUMS
+        run: |
+          set -e
+
+          cd release
+
+          sha256sum \
+            MatEdit-linux-x64-gcc.tar.gz \
+            MatEdit-linux-x64-clang.tar.gz \
+            MatEdit-windows-x64-msvc.zip \
+            > ../SHA256SUMS
+
+          cat ../SHA256SUMS
+
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-checksums
+          path: SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Delete previous nightly release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -251,6 +275,25 @@ jobs:
             --title "MatEdit Nightly" \
             --prerelease
 
+      - name: Commit SHA256SUMS
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add SHA256SUMS
+
+          if git diff --cached --quiet; then
+            echo "SHA256SUMS has no changes"
+            exit 0
+          fi
+
+          git commit \
+            -m "Update release checksums [skip ci]"
+
+          git push origin HEAD:main
+
   deploy-aur:
     name: Deploy AUR packages
     runs-on: ubuntu-latest
@@ -263,6 +306,27 @@ jobs:
         id: version
         run: |
           echo "pkgver=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Download release checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: release-checksums
+          path: checksums
+
+      - name: Get GCC package checksum
+        id: checksum
+        run: |
+          set -e
+
+          gcc_sha256=$(awk '$2 == "MatEdit-linux-x64-gcc.tar.gz" {print $1}' checksums/SHA256SUMS)
+
+          if [ -z "$gcc_sha256" ]; then
+            echo "Failed to find GCC package checksum"
+            exit 1
+          fi
+
+          echo "gcc_sha256=${gcc_sha256}" >> "$GITHUB_OUTPUT"
+          echo "GCC SHA256: ${gcc_sha256}"
 
       - name: Configure SSH
         env:
@@ -318,6 +382,7 @@ jobs:
         working-directory: aur-bin
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
+          GCC_SHA256: ${{ steps.checksum.outputs.gcc_sha256 }}
         run: |
           set -e
 
@@ -338,11 +403,18 @@ jobs:
             "s/^pkgrel=.*/pkgrel=${new_pkgrel}/" \
             PKGBUILD
 
+          sed -E -i \
+            "s/^sha256sums=\('[^']*' 'SKIP'\)/sha256sums=('${GCC_SHA256}' 'SKIP')/" \
+            PKGBUILD
+
           echo "pkgver=${PKGVER}"
           echo "pkgrel=${new_pkgrel}"
+          echo "GCC SHA256=${GCC_SHA256}"
 
       - name: Update matedit-bin .SRCINFO
         working-directory: aur-bin
+        env:
+          GCC_SHA256: ${{ steps.checksum.outputs.gcc_sha256 }}
         run: |
           set -e
 
@@ -357,6 +429,26 @@ jobs:
             "s/^([[:space:]]*)pkgrel = .*/\1pkgrel = ${pkgrel}/" \
             .SRCINFO
 
+          awk -v hash="$GCC_SHA256" '
+            BEGIN {
+              count = 0
+            }
+
+            /^[[:space:]]*sha256sums = / {
+              count++
+
+              if (count == 1) {
+                sub(/= .*/, "= " hash)
+              }
+            }
+
+            {
+              print
+            }
+          ' .SRCINFO > .SRCINFO.tmp
+
+          mv .SRCINFO.tmp .SRCINFO
+
           if ! grep -Eq "^[[:space:]]*pkgver = ${pkgver}$" .SRCINFO; then
             echo "Failed to update pkgver in .SRCINFO"
             exit 1
@@ -367,8 +459,13 @@ jobs:
             exit 1
           fi
 
+          if ! grep -Eq "^[[:space:]]*sha256sums = ${GCC_SHA256}$" .SRCINFO; then
+            echo "Failed to update GCC SHA256 in .SRCINFO"
+            exit 1
+          fi
+
           echo ".SRCINFO synchronized:"
-          grep -E "^[[:space:]]*(pkgver|pkgrel) = " .SRCINFO
+          grep -E "^[[:space:]]*(pkgver|pkgrel|sha256sums) = " .SRCINFO
 
       - name: Commit and push matedit-bin
         working-directory: aur-bin
