@@ -251,8 +251,8 @@ jobs:
             --title "MatEdit Nightly" \
             --prerelease
 
-  deploy-aur-bin:
-    name: Deploy matedit-bin to AUR
+  deploy-aur:
+    name: Deploy AUR packages
     runs-on: ubuntu-latest
 
     needs:
@@ -268,16 +268,22 @@ jobs:
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
+          set -e
+
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "AUR_SSH_PRIVATE_KEY secret is empty or missing"
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
 
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-
           cat > ~/.ssh/config <<'EOF'
           Host aur.archlinux.org
+              HostName aur.archlinux.org
               User aur
               IdentityFile ~/.ssh/aur
               IdentitiesOnly yes
@@ -285,19 +291,55 @@ jobs:
 
           chmod 600 ~/.ssh/config
 
-      - name: Clone AUR repository
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Test AUR SSH authentication
         run: |
-          git clone ssh://aur@aur.archlinux.org/matedit-bin.git aur
+          set +e
 
-      - name: Configure Git
+          OUTPUT=$(ssh -T -o BatchMode=yes aur@aur.archlinux.org 2>&1)
+          STATUS=$?
+
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -qi "Welcome to AUR"; then
+            exit 0
+          fi
+
+          if echo "$OUTPUT" | grep -qi "Authenticated"; then
+            exit 0
+          fi
+
+          if echo "$OUTPUT" | grep -qi "successfully authenticated"; then
+            exit 0
+          fi
+
+          echo "AUR SSH authentication failed"
+          exit 1
+
+      - name: Clone matedit-bin AUR repository
         run: |
-          cd aur
+          git clone \
+            ssh://aur@aur.archlinux.org/matedit-bin.git \
+            aur-bin
 
-          git config user.name "${{ secrets.AUR_USERNAME }}"
-          git config user.email "${{ secrets.AUR_EMAIL }}"
+      - name: Clone matedit-git AUR repository
+        run: |
+          git clone \
+            ssh://aur@aur.archlinux.org/matedit-git.git \
+            aur-git
 
-      - name: Update PKGBUILD
-        working-directory: aur
+      - name: Configure Git identity
+        run: |
+          git -C aur-bin config user.name "${{ secrets.AUR_USERNAME }}"
+          git -C aur-bin config user.email "${{ secrets.AUR_EMAIL }}"
+
+          git -C aur-git config user.name "${{ secrets.AUR_USERNAME }}"
+          git -C aur-git config user.email "${{ secrets.AUR_EMAIL }}"
+
+      - name: Update matedit-bin PKGBUILD
+        working-directory: aur-bin
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
@@ -305,25 +347,24 @@ jobs:
             "s/^pkgver=.*/pkgver=${PKGVER}/" \
             PKGBUILD
 
-      - name: Install Arch build tools
+      - name: Update matedit-bin .SRCINFO
+        working-directory: aur-bin
+        env:
+          PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
-          docker run --rm \
-            -v "$PWD/aur:/aur" \
-            archlinux:latest \
-            bash -c '
-              pacman -Sy --noconfirm --needed base-devel &&
-              cd /aur &&
-              makepkg --printsrcinfo > .SRCINFO
-            '
+          sed -i \
+            "s/^pkgver = .*/pkgver = ${PKGVER}/" \
+            .SRCINFO
 
-      - name: Commit and push
-        working-directory: aur
+      - name: Commit and push matedit-bin
+        working-directory: aur-bin
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
           git add PKGBUILD .SRCINFO
 
           if git diff --cached --quiet; then
+            echo "matedit-bin has no changes"
             exit 0
           fi
 
