@@ -893,6 +893,7 @@ void AssignTexture(Material& material, const char* field, const std::string& ref
     if (size > 0) std::snprintf(target, size, "%s", value.c_str());
 }
 
+
 void AssignSelected(Material* material, const char* field) {
     if (!material || g_preview.reference.empty() || !g_preview.info.valid || g_preview.info.texture == 0) return;
     AssignTexture(*material, field, g_preview.reference);
