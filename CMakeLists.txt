@@ -16,10 +16,7 @@ if(NOT EXISTS "${STB_INCLUDE_DIR}/stb_image.h")
         GIT_REPOSITORY https://github.com/nothings/stb.git
         GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
     )
-    FetchContent_GetProperties(stb)
-    if(NOT stb_POPULATED)
-        FetchContent_Populate(stb)
-    endif()
+    FetchContent_MakeAvailable(stb)
     set(STB_INCLUDE_DIR "${stb_SOURCE_DIR}")
 endif()
 
