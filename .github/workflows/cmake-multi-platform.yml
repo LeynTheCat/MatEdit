@@ -22,6 +22,10 @@ jobs:
     name: Determine AUR version
     runs-on: ubuntu-latest
 
+    outputs:
+      pkgver: ${{ steps.version.outputs.pkgver }}
+      pkgrel: ${{ steps.version.outputs.pkgrel }}
+
     steps:
       - name: Configure SSH
         env:
@@ -370,6 +374,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
+
           gh release create nightly \
             "release/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz" \
             "release/MatEdit-linux-x64-clang-${PKGVER}-${PKGREL}.tar.gz" \
@@ -473,6 +479,8 @@ jobs:
 
       - name: Configure Git identity
         run: |
+          set -e
+
           git -C aur-bin config user.name "${{ secrets.AUR_USERNAME }}"
           git -C aur-bin config user.email "${{ secrets.AUR_EMAIL }}"
 
