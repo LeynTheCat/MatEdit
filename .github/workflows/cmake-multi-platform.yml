@@ -437,6 +437,7 @@ jobs:
           fi
 
           echo "gcc_sha256=${gcc_sha256}" >> "$GITHUB_OUTPUT"
+
           echo "GCC SHA256: ${gcc_sha256}"
 
       - name: Configure SSH
@@ -526,7 +527,7 @@ jobs:
             .SRCINFO
 
           sed -E -i \
-            "s|^([[:space:]]*)source = MatEdit-linux-x64-gcc-[^[:space:]]+\.tar\.gz::https://github\.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-[^[:space:]]+\.tar\.gz|\1source = MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz|" \
+            "s|^([[:space:]]*)source = MatEdit-linux-x64-gcc.*|\1source = MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz|" \
             .SRCINFO
 
           awk -v hash="$GCC_SHA256" '
@@ -549,28 +550,39 @@ jobs:
 
           mv .SRCINFO.tmp .SRCINFO
 
-          if ! grep -Eq "^[[:space:]]*pkgver = ${PKGVER}$" .SRCINFO; then
+          if ! grep -Eq \
+            "^[[:space:]]*pkgver = ${PKGVER}$" \
+            .SRCINFO; then
             echo "Failed to update pkgver in .SRCINFO"
             exit 1
           fi
 
-          if ! grep -Eq "^[[:space:]]*pkgrel = ${PKGREL}$" .SRCINFO; then
+          if ! grep -Eq \
+            "^[[:space:]]*pkgrel = ${PKGREL}$" \
+            .SRCINFO; then
             echo "Failed to update pkgrel in .SRCINFO"
             exit 1
           fi
 
-          if ! grep -Eq "^[[:space:]]*sha256sums = ${GCC_SHA256}$" .SRCINFO; then
+          if ! grep -Eq \
+            "^[[:space:]]*sha256sums = ${GCC_SHA256}$" \
+            .SRCINFO; then
             echo "Failed to update GCC SHA256 in .SRCINFO"
             exit 1
           fi
 
-          if ! grep -Eq "MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}\.tar\.gz" .SRCINFO; then
+          if ! grep -Fq \
+            "MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz" \
+            .SRCINFO; then
             echo "Failed to update GCC source in .SRCINFO"
             exit 1
           fi
 
           echo ".SRCINFO synchronized:"
-          grep -E "^[[:space:]]*(pkgver|pkgrel|source|sha256sums) = " .SRCINFO
+
+          grep -E \
+            "^[[:space:]]*(pkgver|pkgrel|source|sha256sums) = " \
+            .SRCINFO
 
       - name: Validate PKGBUILD and .SRCINFO
         working-directory: aur-bin
@@ -579,12 +591,16 @@ jobs:
         run: |
           set -e
 
-          if ! grep -Eq "^pkgver=${PKGVER}$" PKGBUILD; then
+          if ! grep -Eq \
+            "^pkgver=${PKGVER}$" \
+            PKGBUILD; then
             echo "PKGBUILD pkgver mismatch"
             exit 1
           fi
 
-          if ! grep -Eq "^pkgrel=${PKGREL}$" PKGBUILD; then
+          if ! grep -Eq \
+            "^pkgrel=${PKGREL}$" \
+            PKGBUILD; then
             echo "PKGBUILD pkgrel mismatch"
             exit 1
           fi
