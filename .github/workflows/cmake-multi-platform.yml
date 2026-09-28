@@ -58,10 +58,12 @@ jobs:
           mkdir -p package
 
           cp build/MaterialEditor package/MaterialEditor
+          cp CONTRIBUTORS.txt package/CONTRIBUTORS.txt
 
           tar -czf MatEdit-linux-x64-gcc.tar.gz \
             -C package \
-            MaterialEditor
+            MaterialEditor \
+            CONTRIBUTORS.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -114,10 +116,12 @@ jobs:
           mkdir -p package
 
           cp build/MaterialEditor package/MaterialEditor
+          cp CONTRIBUTORS.txt package/CONTRIBUTORS.txt
 
           tar -czf MatEdit-linux-x64-clang.tar.gz \
             -C package \
-            MaterialEditor 
+            MaterialEditor \
+            CONTRIBUTORS.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -162,11 +166,15 @@ jobs:
             build\Release\MaterialEditor.exe `
             package\MaterialEditor.exe
 
+          Copy-Item `
+            CONTRIBUTORS.txt `
+            package\CONTRIBUTORS.txt
 
 
           Compress-Archive `
             -Path `
               package\MaterialEditor.exe `
+              package\CONTRIBUTORS.txt `
             -DestinationPath MatEdit-windows-x64-msvc.zip `
             -Force
 

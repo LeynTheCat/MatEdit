@@ -4,14 +4,17 @@
 #include "Config.h"
 #include <vector>
 #include <functional>
+struct GLFWwindow;
 
 void InitUI();
+void SetEditorInputWindow(GLFWwindow* window);
+void OpenEditorSettings();
 void ReleaseEditorUIPreview();
 bool IsEditorViewportHovered();
+bool IsMaterialCreatorOpen();
 void GetEditorViewportRect(float& x, float& y, float& w, float& h);
 void DrawEditorViewportTexture(GLuint texture);
 void DrawEditorViewportFPS(float fps);
-void DrawEditorViewportFreeCamHint();
 void ToggleEditorPanels();
 void DrawEditorUI(
     int display_w, int display_h,
@@ -26,6 +29,7 @@ void DrawEditorUI(
     std::string& currentDefFile,
     int& currentPhysMatIndex,
     int& shapeType,
+    bool& modelVisible,
     int& lightMode,
     bool& useNormal,
     bool& useGloss,
