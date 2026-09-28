@@ -1,4 +1,3 @@
-
 name: MatEdit Nightly
 
 on:
@@ -181,4 +180,106 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        w
+        with:
+          name: MatEdit-windows-x64-msvc
+          path: MatEdit-windows-x64-msvc.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish Nightly Release
+    runs-on: ubuntu-latest
+
+    needs:
+      - build-linux-gcc
+      - build-linux-clang
+      - build-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Download Linux GCC package
+        uses: actions/download-artifact@v4
+        with:
+          name: MatEdit-linux-x64-gcc
+          path: release
+
+      - name: Download Linux Clang package
+        uses: actions/download-artifact@v4
+        with:
+          name: MatEdit-linux-x64-clang
+          path: release
+
+      - name: Download Windows MSVC package
+        uses: actions/download-artifact@v4
+        with:
+          name: MatEdit-windows-x64-msvc
+          path: release
+
+      - name: Delete previous nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+
+      - name: Remove all tags except nightly
+        run: |
+          set -e
+
+          git fetch --tags --force
+
+          git tag --list | while read -r tag; do
+            if [ "$tag" != "nightly" ]; then
+              echo "Deleting tag: $tag"
+              git push origin ":refs/tags/$tag"
+            fi
+          done
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create nightly \
+            release/MatEdit-linux-x64-gcc.tar.gz \
+            release/MatEdit-linux-x64-clang.tar.gz \
+            release/MatEdit-windows-x64-msvc.zip \
+            --target "${GITHUB_SHA}" \
+            --title "MatEdit Nightly" \
+            --prerelease
+
+  deploy-aur-bin:
+    name: Deploy matedit-bin to AUR
+    runs-on: ubuntu-latest
+
+    needs:
+      - release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get package version
+        id: version
+        run: |
+          echo "pkgver=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare PKGBUILD
+        run: |
+          sed -i \
+            "s/^pkgver=.*/pkgver=${{ steps.version.outputs.pkgver }}/" \
+            PKGBUILD
+
+      - name: Deploy to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@master
+        with:
+          pkgname: matedit-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to version ${{ steps.version.outputs.pkgver }}"
+          allow_empty_commits: false
