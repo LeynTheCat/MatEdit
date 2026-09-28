@@ -172,9 +172,10 @@ jobs:
 
 
           Compress-Archive `
-            -Path `
-              package\MaterialEditor.exe `
-              package\CONTRIBUTORS.txt `
+            -Path @(
+              'package\MaterialEditor.exe',
+              'package\CONTRIBUTORS.txt'
+            ) `
             -DestinationPath MatEdit-windows-x64-msvc.zip `
             -Force
 
