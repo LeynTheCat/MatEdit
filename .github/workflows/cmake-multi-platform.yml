@@ -349,26 +349,26 @@ jobs:
           pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
           pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
 
-          sed -i \
-            "s/^pkgver = .*/pkgver = ${pkgver}/g" \
+          sed -E -i \
+            "s/^([[:space:]]*)pkgver = .*/\1pkgver = ${pkgver}/" \
             .SRCINFO
 
-          sed -i \
-            "s/^pkgrel = .*/pkgrel = ${pkgrel}/g" \
+          sed -E -i \
+            "s/^([[:space:]]*)pkgrel = .*/\1pkgrel = ${pkgrel}/" \
             .SRCINFO
 
-          if ! grep -q "^pkgver = ${pkgver}$" .SRCINFO; then
+          if ! grep -Eq "^[[:space:]]*pkgver = ${pkgver}$" .SRCINFO; then
             echo "Failed to update pkgver in .SRCINFO"
             exit 1
           fi
 
-          if ! grep -q "^pkgrel = ${pkgrel}$" .SRCINFO; then
+          if ! grep -Eq "^[[:space:]]*pkgrel = ${pkgrel}$" .SRCINFO; then
             echo "Failed to update pkgrel in .SRCINFO"
             exit 1
           fi
 
           echo ".SRCINFO synchronized:"
-          grep -E '^(pkgver|pkgrel) = ' .SRCINFO
+          grep -E "^[[:space:]]*(pkgver|pkgrel) = " .SRCINFO
 
       - name: Commit and push matedit-bin
         working-directory: aur-bin
