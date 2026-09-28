@@ -501,7 +501,7 @@ jobs:
             PKGBUILD
 
           sed -E -i \
-            "s|^    \"MatEdit-linux-x64-gcc-[^\"]+\.tar\.gz::https://github\.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-[^\"]+\.tar\.gz\"|    \"MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz\"|" \
+            "s|^[[:space:]]*\"MatEdit-linux-x64-gcc.*|    \"MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz\"|" \
             PKGBUILD
 
           sed -E -i \
@@ -509,7 +509,8 @@ jobs:
             PKGBUILD
 
           echo "Updated PKGBUILD:"
-          grep -E '^(pkgver|pkgrel|source=|sha256sums=)' PKGBUILD
+          echo
+          cat PKGBUILD
 
       - name: Update matedit-bin .SRCINFO
         working-directory: aur-bin
@@ -579,7 +580,6 @@ jobs:
           fi
 
           echo ".SRCINFO synchronized:"
-
           grep -E \
             "^[[:space:]]*(pkgver|pkgrel|source|sha256sums) = " \
             .SRCINFO
@@ -590,6 +590,8 @@ jobs:
           GCC_SHA256: ${{ steps.checksum.outputs.gcc_sha256 }}
         run: |
           set -e
+
+          expected_source="MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz"
 
           if ! grep -Eq \
             "^pkgver=${PKGVER}$" \
@@ -606,9 +608,15 @@ jobs:
           fi
 
           if ! grep -Fq \
-            "MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz::https://github.com/hgruntt/MatEdit/releases/download/nightly/MatEdit-linux-x64-gcc-${PKGVER}-${PKGREL}.tar.gz" \
+            "$expected_source" \
             PKGBUILD; then
             echo "PKGBUILD GCC source mismatch"
+            echo
+            echo "Expected:"
+            echo "$expected_source"
+            echo
+            echo "Actual GCC source:"
+            grep "MatEdit-linux-x64-gcc" PKGBUILD || true
             exit 1
           fi
 
@@ -616,25 +624,28 @@ jobs:
             "sha256sums=('${GCC_SHA256}' 'SKIP')" \
             PKGBUILD; then
             echo "PKGBUILD SHA256 mismatch"
+            echo
+            echo "Actual sha256sums:"
+            grep "^sha256sums=" PKGBUILD || true
             exit 1
           fi
 
           if ! grep -Eq \
-            "^pkgver = ${PKGVER}$" \
+            "^[[:space:]]*pkgver = ${PKGVER}$" \
             .SRCINFO; then
             echo ".SRCINFO pkgver mismatch"
             exit 1
           fi
 
           if ! grep -Eq \
-            "^pkgrel = ${PKGREL}$" \
+            "^[[:space:]]*pkgrel = ${PKGREL}$" \
             .SRCINFO; then
             echo ".SRCINFO pkgrel mismatch"
             exit 1
           fi
 
           if ! grep -Eq \
-            "^sha256sums = ${GCC_SHA256}$" \
+            "^[[:space:]]*sha256sums = ${GCC_SHA256}$" \
             .SRCINFO; then
             echo ".SRCINFO SHA256 mismatch"
             exit 1
