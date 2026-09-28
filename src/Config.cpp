@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -10,15 +11,16 @@
 namespace {
 std::filesystem::path GetConfigPath() {
 #ifdef _WIN32
-    char buffer[4096] = {};
-    unsigned long length = GetModuleFileNameA(nullptr, buffer, static_cast<unsigned long>(sizeof(buffer)));
-    if (length > 0 && length < sizeof(buffer)) return std::filesystem::path(buffer).parent_path() / "editor_config.txt";
-#else
-    std::error_code ec;
-    std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && !executable.empty()) return executable.parent_path() / "editor_config.txt";
-#endif
+    if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata)
+        return std::filesystem::path(appdata) / "matedit" / "editor_config.txt";
     return std::filesystem::current_path() / "editor_config.txt";
+#else
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
+        return std::filesystem::path(xdg) / "matedit" / "editor_config.txt";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / ".config" / "matedit" / "editor_config.txt";
+    return std::filesystem::current_path() / "editor_config.txt";
+#endif
 }
 
 void ParseOptionalConfig(EditorConfig& cfg, const std::string& line) {
@@ -139,7 +141,11 @@ void LoadConfig(EditorConfig& cfg) {
 }
 
 void SaveConfig(const EditorConfig& cfg) {
-    std::ofstream file(GetConfigPath());
+    const std::filesystem::path path = GetConfigPath();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+
+    std::ofstream file(path);
     if (!file.is_open()) return;
 
     file << cfg.gamePath << "\n";
