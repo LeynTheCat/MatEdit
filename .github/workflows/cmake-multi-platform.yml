@@ -294,30 +294,6 @@ jobs:
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Test AUR SSH authentication
-        run: |
-          set +e
-
-          OUTPUT=$(ssh -T -o BatchMode=yes aur@aur.archlinux.org 2>&1)
-          STATUS=$?
-
-          echo "$OUTPUT"
-
-          if echo "$OUTPUT" | grep -qi "Welcome to AUR"; then
-            exit 0
-          fi
-
-          if echo "$OUTPUT" | grep -qi "Authenticated"; then
-            exit 0
-          fi
-
-          if echo "$OUTPUT" | grep -qi "successfully authenticated"; then
-            exit 0
-          fi
-
-          echo "AUR SSH authentication failed"
-          exit 1
-
       - name: Clone matedit-bin AUR repository
         run: |
           git clone \
@@ -343,24 +319,58 @@ jobs:
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
+          set -e
+
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+
+          if [ "$current_pkgver" = "$PKGVER" ]; then
+            new_pkgrel=$((current_pkgrel + 1))
+          else
+            new_pkgrel=1
+          fi
+
           sed -i \
             "s/^pkgver=.*/pkgver=${PKGVER}/" \
             PKGBUILD
+
+          sed -i \
+            "s/^pkgrel=.*/pkgrel=${new_pkgrel}/" \
+            PKGBUILD
+
+          echo "pkgver=${PKGVER}"
+          echo "pkgrel=${new_pkgrel}"
 
       - name: Update matedit-bin .SRCINFO
         working-directory: aur-bin
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
-          sed -i \
-            "s/^pkgver = .*/pkgver = ${PKGVER}/" \
-            .SRCINFO
+          set -e
+
+          current_pkgver=$(sed -n 's/^pkgver = //p' .SRCINFO | head -n1)
+          current_pkgrel=$(sed -n 's/^pkgrel = //p' .SRCINFO | head -n1)
+          new_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+
+          if [ "$current_pkgver" != "$PKGVER" ]; then
+            sed -i \
+              "s/^pkgver = .*/pkgver = ${PKGVER}/" \
+              .SRCINFO
+          fi
+
+          if [ "$current_pkgrel" != "$new_pkgrel" ]; then
+            sed -i \
+              "s/^pkgrel = .*/pkgrel = ${new_pkgrel}/" \
+              .SRCINFO
+          fi
 
       - name: Commit and push matedit-bin
         working-directory: aur-bin
         env:
           PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
+          set -e
+
           git add PKGBUILD .SRCINFO
 
           if git diff --cached --quiet; then
@@ -368,7 +378,9 @@ jobs:
             exit 0
           fi
 
+          pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+
           git commit \
-            -m "Update to version ${PKGVER}"
+            -m "Update to version ${PKGVER}-${pkgrel}"
 
           git push origin master
