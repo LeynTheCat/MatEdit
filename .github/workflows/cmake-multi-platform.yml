@@ -259,27 +259,75 @@ jobs:
       - release
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Get package version
         id: version
         run: |
           echo "pkgver=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare PKGBUILD
+      - name: Configure SSH
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+
+          cat > ~/.ssh/config <<'EOF'
+          Host aur.archlinux.org
+              User aur
+              IdentityFile ~/.ssh/aur
+              IdentitiesOnly yes
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Clone AUR repository
+        run: |
+          git clone ssh://aur@aur.archlinux.org/matedit-bin.git aur
+
+      - name: Configure Git
+        run: |
+          cd aur
+
+          git config user.name "${{ secrets.AUR_USERNAME }}"
+          git config user.email "${{ secrets.AUR_EMAIL }}"
+
+      - name: Update PKGBUILD
+        working-directory: aur
+        env:
+          PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
           sed -i \
-            "s/^pkgver=.*/pkgver=${{ steps.version.outputs.pkgver }}/" \
+            "s/^pkgver=.*/pkgver=${PKGVER}/" \
             PKGBUILD
 
-      - name: Deploy to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@master
-        with:
-          pkgname: matedit-bin
-          pkgbuild: ./PKGBUILD
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to version ${{ steps.version.outputs.pkgver }}"
-          allow_empty_commits: false
+      - name: Install Arch build tools
+        run: |
+          docker run --rm \
+            -v "$PWD/aur:/aur" \
+            archlinux:latest \
+            bash -c '
+              pacman -Sy --noconfirm --needed base-devel &&
+              cd /aur &&
+              makepkg --printsrcinfo > .SRCINFO
+            '
+
+      - name: Commit and push
+        working-directory: aur
+        env:
+          PKGVER: ${{ steps.version.outputs.pkgver }}
+        run: |
+          git add PKGBUILD .SRCINFO
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git commit \
+            -m "Update to version ${PKGVER}"
+
+          git push origin master
