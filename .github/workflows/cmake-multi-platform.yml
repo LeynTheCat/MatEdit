@@ -325,7 +325,7 @@ jobs:
           current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
 
           if [ "$current_pkgver" = "$PKGVER" ]; then
-            new_pkgrel=$((current_pkgrel + 1))
+            new_pkgrel=$((10#$current_pkgrel + 1))
           else
             new_pkgrel=1
           fi
@@ -343,26 +343,32 @@ jobs:
 
       - name: Update matedit-bin .SRCINFO
         working-directory: aur-bin
-        env:
-          PKGVER: ${{ steps.version.outputs.pkgver }}
         run: |
           set -e
 
-          current_pkgver=$(sed -n 's/^pkgver = //p' .SRCINFO | head -n1)
-          current_pkgrel=$(sed -n 's/^pkgrel = //p' .SRCINFO | head -n1)
-          new_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+          pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
 
-          if [ "$current_pkgver" != "$PKGVER" ]; then
-            sed -i \
-              "s/^pkgver = .*/pkgver = ${PKGVER}/" \
-              .SRCINFO
+          sed -i \
+            "s/^pkgver = .*/pkgver = ${pkgver}/g" \
+            .SRCINFO
+
+          sed -i \
+            "s/^pkgrel = .*/pkgrel = ${pkgrel}/g" \
+            .SRCINFO
+
+          if ! grep -q "^pkgver = ${pkgver}$" .SRCINFO; then
+            echo "Failed to update pkgver in .SRCINFO"
+            exit 1
           fi
 
-          if [ "$current_pkgrel" != "$new_pkgrel" ]; then
-            sed -i \
-              "s/^pkgrel = .*/pkgrel = ${new_pkgrel}/" \
-              .SRCINFO
+          if ! grep -q "^pkgrel = ${pkgrel}$" .SRCINFO; then
+            echo "Failed to update pkgrel in .SRCINFO"
+            exit 1
           fi
+
+          echo ".SRCINFO synchronized:"
+          grep -E '^(pkgver|pkgrel) = ' .SRCINFO
 
       - name: Commit and push matedit-bin
         working-directory: aur-bin
