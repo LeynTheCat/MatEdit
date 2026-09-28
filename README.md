@@ -80,7 +80,7 @@ This project is distributed under the GNU General Public License v3.0. See `LICE
 - **Поддержка карт текстур**:
   - Диффузная / albedo
   - Карта нормалей
-  - Gloss 
+  - Карта блеска / Gloss 
   - Карта свечения / emissive
   - Карта высот / parallax
 - **Загрузка skybox** через DDS-кубические карты для реалистичных отражений и фона.
