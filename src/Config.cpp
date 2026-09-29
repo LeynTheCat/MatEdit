@@ -13,6 +13,8 @@ std::filesystem::path GetConfigPath() {
 #ifdef _WIN32
     if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata)
         return std::filesystem::path(appdata) / "matedit" / "editor_config.txt";
+    if (const char* up = std::getenv("USERPROFILE"); up && *up)
+        return std::filesystem::path(up) / ".config" / "matedit" / "editor_config.txt";
     return std::filesystem::current_path() / "editor_config.txt";
 #else
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
@@ -21,6 +23,19 @@ std::filesystem::path GetConfigPath() {
         return std::filesystem::path(home) / ".config" / "matedit" / "editor_config.txt";
     return std::filesystem::current_path() / "editor_config.txt";
 #endif
+}
+
+std::filesystem::path GetConfigReadPath() {
+    const auto primary = GetConfigPath();
+    std::error_code ec;
+    if (std::filesystem::exists(primary, ec)) return primary;
+#ifdef _WIN32
+    if (const char* up = std::getenv("USERPROFILE"); up && *up) {
+        auto alt = std::filesystem::path(up) / ".config" / "matedit" / "editor_config.txt";
+        if (std::filesystem::exists(alt, ec)) return alt;
+    }
+#endif
+    return primary;
 }
 
 void ParseOptionalConfig(EditorConfig& cfg, const std::string& line) {
@@ -84,7 +99,7 @@ void ParseOptionalConfig(EditorConfig& cfg, const std::string& line) {
 }
 
 void LoadConfig(EditorConfig& cfg) {
-    std::ifstream file(GetConfigPath());
+    std::ifstream file(GetConfigReadPath());
     if (!file.is_open()) return;
 
     std::vector<std::string> lines;

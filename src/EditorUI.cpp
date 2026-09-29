@@ -20,6 +20,7 @@
 #include <numeric>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
 
 namespace fs = std::filesystem;
 
@@ -344,6 +345,9 @@ struct PreviewState {
     std::string reference;
     std::string kind;
     TexturePreviewInfo info;
+    float zoom = 1.0f;
+    ImVec2 pan = ImVec2(0.0f, 0.0f);
+    bool showSource = false;
 };
 
 struct BrowserEntry {
@@ -412,6 +416,7 @@ int g_creatorGlossMetric = 0;
 int g_creatorBumpHeightChannel = 1;
 bool g_creatorBumpInvert = false;
 float g_creatorBumpContrast = 1.0f;
+float g_creatorBumpSharpness = 0.0f;
 float g_creatorBumpBrightness = 0.0f;
 bool g_creatorBumpNormalize = false;
 bool g_creatorBumpMipmaps = true;
@@ -423,12 +428,14 @@ char g_creatorSaveName[256] = "";
 PreviewState g_creatorNormalPreview;
 PreviewState g_creatorGlossPreview;
 PreviewState g_creatorBumpPreview;
+PreviewState g_creatorSourcePreview;
 char g_materialCreatorDiffuse[256] = "";
 char g_materialCreatorOutputFolder[512] = "textures";
 char g_materialCreatorNormalName[128] = "new_material_norm";
 char g_materialCreatorGlossName[128] = "new_material_gloss";
 char g_materialCreatorBumpName[128] = "new_material";
 float g_materialCreatorNormalStrength = 2.0f;
+float g_materialCreatorNormalSharpness = 0.0f;
 int g_materialCreatorNormalHeightChannel = 0;
 bool g_materialCreatorNormalInvertHeight = false;
 bool g_materialCreatorFlipX = false;
@@ -437,6 +444,7 @@ bool g_materialCreatorFullZRange = false;
 bool g_materialCreatorNormalMipmaps = true;
 int g_materialCreatorNormalFormat = 0;
 float g_materialCreatorGlossContrast = 1.0f;
+float g_materialCreatorGlossSharpness = 0.0f;
 float g_materialCreatorGlossBrightness = 0.0f;
 float g_materialCreatorGlossPower = 1.0f;
 bool g_materialCreatorGlossInvert = false;
@@ -1604,31 +1612,67 @@ bool CreatorSlider(const char* label, float* value, float minValue, float maxVal
     return changed;
 }
 
-void DrawCreatorImagePreview(const char* title, const PreviewState& preview) {
+void DrawCreatorImagePreview(const char* title, PreviewState& preview) {
     ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_HeaderActive], "%s", title);
+    ImGui::SameLine();
+    if (ImGui::Button("SWAP")) preview.showSource = !preview.showSource;
+    ImGui::SameLine();
+    if (ImGui::Button("FIT")) { preview.zoom = 1.0f; preview.pan = ImVec2(0.0f, 0.0f); }
+    ImGui::SameLine();
+    ImGui::Text("%.0f%%", preview.zoom * 100.0f);
     ImGui::Spacing();
+
+    const TexturePreviewInfo* info = &preview.info;
+    if (preview.showSource && g_creatorSourcePreview.info.valid) info = &g_creatorSourcePreview.info;
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    if (!preview.info.valid || preview.info.texture == 0 || preview.info.width <= 0 || preview.info.height <= 0) {
+    if (!info->valid || info->texture == 0 || info->width <= 0 || info->height <= 0) {
         ImGui::SetCursorPos(ImVec2(std::max(8.0f, (avail.x - 170.0f) * 0.5f), std::max(20.0f, (avail.y - 20.0f) * 0.5f)));
         ImGui::TextDisabled("PREVIEW UNAVAILABLE");
         return;
     }
-    const float aspect = static_cast<float>(preview.info.width) / static_cast<float>(std::max(1, preview.info.height));
-    float imageW = std::max(32.0f, avail.x - 12.0f);
-    float imageH = imageW / std::max(0.01f, aspect);
-    if (imageH > avail.y - 36.0f) {
-        imageH = std::max(32.0f, avail.y - 36.0f);
-        imageW = imageH * aspect;
+
+    ImGui::BeginChild("##CreatorPreviewCanvas", ImVec2(0.0f, std::max(40.0f, avail.y)), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImVec2 canvas = ImGui::GetContentRegionAvail();
+    const float aspect = static_cast<float>(info->width) / static_cast<float>(std::max(1, info->height));
+    float fitW = canvas.x - 12.0f;
+    float fitH = canvas.y - 12.0f;
+    if (fitW / std::max(0.01f, aspect) > fitH) fitW = fitH * aspect;
+    else fitH = fitW / std::max(0.01f, aspect);
+    const float imageW = std::max(8.0f, fitW * preview.zoom);
+    const float imageH = std::max(8.0f, fitH * preview.zoom);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 center(origin.x + canvas.x * 0.5f + preview.pan.x, origin.y + canvas.y * 0.5f + preview.pan.y);
+    const ImVec2 minPos(center.x - imageW * 0.5f, center.y - imageH * 0.5f);
+
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::InvisibleButton("##CreatorPreviewInput", canvas, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+    if (ImGui::IsItemHovered()) {
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f) {
+            const float oldZoom = preview.zoom;
+            preview.zoom = std::clamp(preview.zoom * std::pow(1.15f, wheel), 0.1f, 8.0f);
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const ImVec2 rel(mouse.x - (origin.x + canvas.x * 0.5f), mouse.y - (origin.y + canvas.y * 0.5f));
+            const float ratio = preview.zoom / oldZoom - 1.0f;
+            preview.pan.x -= rel.x * ratio;
+            preview.pan.y -= rel.y * ratio;
+        }
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            const ImVec2 delta = ImGui::GetIO().MouseDelta;
+            preview.pan.x += delta.x;
+            preview.pan.y += delta.y;
+        }
     }
-    const ImVec2 cursor = ImGui::GetCursorPos();
-    ImGui::SetCursorPos(ImVec2(cursor.x + std::max(4.0f, (avail.x - imageW) * 0.5f), cursor.y + std::max(4.0f, (avail.y - imageH) * 0.5f)));
-    ImGui::Image(static_cast<ImTextureID>(preview.info.texture), ImVec2(imageW, imageH));
+    ImGui::SetCursorScreenPos(minPos);
+    ImGui::Image(static_cast<ImTextureID>(info->texture), ImVec2(imageW, imageH));
+    ImGui::EndChild();
 }
 
 void LeaveMaterialCreator() {
     ReleaseCreatorPreview(g_creatorNormalPreview);
     ReleaseCreatorPreview(g_creatorGlossPreview);
     ReleaseCreatorPreview(g_creatorBumpPreview);
+    ReleaseCreatorPreview(g_creatorSourcePreview);
     g_materialCreatorDiffuse[0] = '\0';
     g_creatorSaveKind = CreatorSaveKind::None;
     g_materialCreator = false;
@@ -1674,6 +1718,12 @@ void SetCreatorDiffuse(const std::string& reference) {
     if (reference.empty()) return;
     std::snprintf(g_materialCreatorDiffuse, sizeof(g_materialCreatorDiffuse), "%s", reference.c_str());
     g_materialCreatorDiffuse[sizeof(g_materialCreatorDiffuse) - 1] = '\0';
+    ReleaseCreatorPreview(g_creatorSourcePreview);
+    g_creatorSourcePreview.info = LoadTexturePreview(g_materialCreatorDiffuse);
+    g_creatorSourcePreview.reference = g_materialCreatorDiffuse;
+    g_creatorSourcePreview.kind = "SOURCE";
+    g_creatorSourcePreview.zoom = 1.0f;
+    g_creatorSourcePreview.pan = ImVec2(0.0f, 0.0f);
     const std::string stem = CreatorBaseStem();
     std::snprintf(g_materialCreatorNormalName, sizeof(g_materialCreatorNormalName), "%s_norm.dds", stem.c_str());
     std::snprintf(g_materialCreatorGlossName, sizeof(g_materialCreatorGlossName), "%s_gloss.dds", stem.c_str());
@@ -1688,7 +1738,7 @@ void SetCreatorDiffuse(const std::string& reference) {
 void GenerateCreatorNormalPreview() {
     if (g_materialCreatorDiffuse[0] == '\0') return;
     ReleaseCreatorPreview(g_creatorNormalPreview);
-    TexturePreviewInfo next = GenerateNormalMapPreviewTexture(g_materialCreatorDiffuse, g_materialCreatorNormalStrength, g_materialCreatorFlipX, g_materialCreatorFlipY, g_materialCreatorFullZRange, g_materialCreatorNormalHeightChannel, g_materialCreatorNormalInvertHeight, g_materialCreatorNormalMipmaps);
+    TexturePreviewInfo next = GenerateNormalMapPreviewTexture(g_materialCreatorDiffuse, g_materialCreatorNormalStrength, g_materialCreatorFlipX, g_materialCreatorFlipY, g_materialCreatorFullZRange, g_materialCreatorNormalHeightChannel, g_materialCreatorNormalInvertHeight, g_materialCreatorNormalSharpness, g_materialCreatorNormalMipmaps);
     if (!next.valid || next.texture == 0) {
         ReleaseTexturePreview(next);
         return;
@@ -1701,7 +1751,7 @@ void GenerateCreatorNormalPreview() {
 void GenerateCreatorGlossPreview() {
     if (g_materialCreatorDiffuse[0] == '\0') return;
     ReleaseCreatorPreview(g_creatorGlossPreview);
-    TexturePreviewInfo next = GenerateGlossMapPreviewTexture(g_materialCreatorDiffuse, g_materialCreatorGlossContrast, g_materialCreatorGlossBrightness, g_materialCreatorGlossPower, g_materialCreatorGlossInvert, g_creatorGlossMetric, g_materialCreatorGlossLower, g_materialCreatorGlossUpper, g_materialCreatorGlossNormalize, g_materialCreatorGlossMipmaps);
+    TexturePreviewInfo next = GenerateGlossMapPreviewTexture(g_materialCreatorDiffuse, g_materialCreatorGlossContrast, g_materialCreatorGlossBrightness, g_materialCreatorGlossPower, g_materialCreatorGlossInvert, g_creatorGlossMetric, g_materialCreatorGlossLower, g_materialCreatorGlossUpper, g_materialCreatorGlossNormalize, g_materialCreatorGlossSharpness, g_materialCreatorGlossMipmaps);
     if (!next.valid || next.texture == 0) {
         ReleaseTexturePreview(next);
         return;
@@ -1715,7 +1765,7 @@ void GenerateCreatorGlossPreview() {
 void GenerateCreatorBumpPreview() {
     if (g_materialCreatorDiffuse[0] == '\0') return;
     ReleaseCreatorPreview(g_creatorBumpPreview);
-    TexturePreviewInfo next = GenerateBumpMapPreviewTexture(g_materialCreatorDiffuse, g_creatorBumpHeightChannel, g_creatorBumpInvert, g_creatorBumpContrast, g_creatorBumpBrightness, g_creatorBumpNormalize, g_creatorBumpMipmaps);
+    TexturePreviewInfo next = GenerateBumpMapPreviewTexture(g_materialCreatorDiffuse, g_creatorBumpHeightChannel, g_creatorBumpInvert, g_creatorBumpContrast, g_creatorBumpBrightness, g_creatorBumpNormalize, g_creatorBumpSharpness, g_creatorBumpMipmaps);
     if (next.valid && next.texture != 0) g_creatorBumpPreview.info = next;
 }
 
@@ -1772,11 +1822,11 @@ bool SaveCreatorTextureNow(CreatorSaveKind kind, const fs::path& output, int for
     fs::remove(temp, ec);
     bool generated = false;
     if (kind == CreatorSaveKind::Normal) {
-        generated = GenerateNormalMapDDS(g_materialCreatorDiffuse, temp.string(), g_materialCreatorNormalStrength, g_materialCreatorFlipX, g_materialCreatorFlipY, g_materialCreatorFullZRange, g_materialCreatorNormalHeightChannel, g_materialCreatorNormalInvertHeight, g_materialCreatorNormalMipmaps, format);
+        generated = GenerateNormalMapDDS(g_materialCreatorDiffuse, temp.string(), g_materialCreatorNormalStrength, g_materialCreatorFlipX, g_materialCreatorFlipY, g_materialCreatorFullZRange, g_materialCreatorNormalHeightChannel, g_materialCreatorNormalInvertHeight, g_materialCreatorNormalSharpness, g_materialCreatorNormalMipmaps, format);
     } else if (kind == CreatorSaveKind::Gloss) {
-        generated = GenerateGlossMapDDS(g_materialCreatorDiffuse, temp.string(), g_materialCreatorGlossContrast, g_materialCreatorGlossBrightness, g_materialCreatorGlossPower, g_materialCreatorGlossInvert, g_creatorGlossMetric, g_materialCreatorGlossLower, g_materialCreatorGlossUpper, g_materialCreatorGlossNormalize, g_materialCreatorGlossMipmaps, format);
+        generated = GenerateGlossMapDDS(g_materialCreatorDiffuse, temp.string(), g_materialCreatorGlossContrast, g_materialCreatorGlossBrightness, g_materialCreatorGlossPower, g_materialCreatorGlossInvert, g_creatorGlossMetric, g_materialCreatorGlossLower, g_materialCreatorGlossUpper, g_materialCreatorGlossNormalize, g_materialCreatorGlossSharpness, g_materialCreatorGlossMipmaps, format);
     } else {
-        generated = GenerateBumpMapDDS(g_materialCreatorDiffuse, temp.string(), g_creatorBumpHeightChannel, g_creatorBumpInvert, g_creatorBumpContrast, g_creatorBumpBrightness, g_creatorBumpNormalize, g_creatorBumpMipmaps, format);
+        generated = GenerateBumpMapDDS(g_materialCreatorDiffuse, temp.string(), g_creatorBumpHeightChannel, g_creatorBumpInvert, g_creatorBumpContrast, g_creatorBumpBrightness, g_creatorBumpNormalize, g_creatorBumpSharpness, g_creatorBumpMipmaps, format);
     }
     if (!generated) { fs::remove(temp, ec); return false; }
     fs::remove(output, ec);
@@ -2012,6 +2062,7 @@ void DrawCreatorSavePopup() {
 
 void ResetCreatorNormalSettings() {
     g_materialCreatorNormalStrength = 2.0f;
+    g_materialCreatorNormalSharpness = 0.0f;
     g_materialCreatorNormalHeightChannel = 0;
     g_materialCreatorNormalInvertHeight = false;
     g_materialCreatorFlipX = false;
@@ -2024,6 +2075,7 @@ void ResetCreatorNormalSettings() {
 
 void ResetCreatorGlossSettings() {
     g_creatorGlossMetric = 0;
+    g_materialCreatorGlossSharpness = 0.0f;
     g_materialCreatorGlossContrast = 1.0f;
     g_materialCreatorGlossBrightness = 0.0f;
     g_materialCreatorGlossPower = 1.0f;
@@ -2038,6 +2090,7 @@ void ResetCreatorGlossSettings() {
 
 void ResetCreatorBumpSettings() {
     g_creatorBumpHeightChannel = 1;
+    g_creatorBumpSharpness = 0.0f;
     g_creatorBumpInvert = false;
     g_creatorBumpContrast = 1.0f;
     g_creatorBumpBrightness = 0.0f;
@@ -2069,6 +2122,7 @@ void DrawMaterialCreator(int display_w, int display_h, EditorConfig& editorCfg) 
             ImGui::SameLine(0.0f, gap);
             ImGui::BeginChild("##NormalControls", ImVec2(0.0f, 0.0f), true);
             if (CreatorSlider("Strength", &g_materialCreatorNormalStrength, 0.0f, 8.0f, "Normal intensity.")) GenerateCreatorNormalPreview();
+            if (CreatorSlider("Sharpness", &g_materialCreatorNormalSharpness, 0.0f, 4.0f, "Sharpens the diffuse before generating the normal map.")) GenerateCreatorNormalPreview();
             const char* heightChannels[] = { "Luminance", "Red", "Green", "Blue", "Alpha" };
             if (ImGui::Combo("Height source", &g_materialCreatorNormalHeightChannel, heightChannels, 5)) GenerateCreatorNormalPreview();
             if (DrawCheckbox("Invert height", &g_materialCreatorNormalInvertHeight)) GenerateCreatorNormalPreview();
@@ -2104,6 +2158,7 @@ void DrawMaterialCreator(int display_w, int display_h, EditorConfig& editorCfg) 
             if (CreatorSlider("Contrast", &g_materialCreatorGlossContrast, 0.0f, 4.0f, "Contrast of the generated gloss values.")) GenerateCreatorGlossPreview();
             if (CreatorSlider("Brightness", &g_materialCreatorGlossBrightness, -1.0f, 1.0f, "Brightness offset.")) GenerateCreatorGlossPreview();
             if (CreatorSlider("Power", &g_materialCreatorGlossPower, 0.05f, 8.0f, "Response curve.")) GenerateCreatorGlossPreview();
+            if (CreatorSlider("Sharpness", &g_materialCreatorGlossSharpness, 0.0f, 4.0f, "Sharpens the diffuse before generating the gloss map.")) GenerateCreatorGlossPreview();
             if (DrawCheckbox("Invert", &g_materialCreatorGlossInvert)) GenerateCreatorGlossPreview();
             if (DrawCheckbox("Generate mipmaps", &g_materialCreatorGlossMipmaps)) GenerateCreatorGlossPreview();
             const char* glossFormats[] = { "BC4", "BC7" };
@@ -2131,6 +2186,7 @@ void DrawMaterialCreator(int display_w, int display_h, EditorConfig& editorCfg) 
             if (DrawCheckbox("Invert height", &g_creatorBumpInvert)) GenerateCreatorBumpPreview();
             if (CreatorSlider("Contrast", &g_creatorBumpContrast, 0.0f, 4.0f, "Contrast of the generated height map.")) GenerateCreatorBumpPreview();
             if (CreatorSlider("Brightness", &g_creatorBumpBrightness, -1.0f, 1.0f, "Brightness offset.")) GenerateCreatorBumpPreview();
+            if (CreatorSlider("Sharpness", &g_creatorBumpSharpness, 0.0f, 4.0f, "Sharpens the diffuse before generating the bump map.")) GenerateCreatorBumpPreview();
             if (DrawCheckbox("Normalize", &g_creatorBumpNormalize)) GenerateCreatorBumpPreview();
             ShowTooltip("Disabled by default for PrimeXT compatibility. Normalization remaps the source range and changes the authored height values.");
             if (DrawCheckbox("Generate mipmaps", &g_creatorBumpMipmaps)) GenerateCreatorBumpPreview();
@@ -2310,7 +2366,17 @@ void DrawEditorPanels(
                 materialParamsChanged |= ImGui::SliderFloat("Refract", &mat.refractScale, 0.0f, 1.0f);
                 materialParamsChanged |= ImGui::SliderFloat("Abberation", &mat.aberrationScale, 0.0f, 1.0f);
                 ImGui::TextUnformatted("Texture Tiling");
-                materialParamsChanged |= ImGui::DragFloat2("##TextureTiling", &mat.textureScaleX, 0.1f, 0.1f, 64.0f, "%.2f");
+                static bool symmetricTiling = false;
+                if (DrawCheckbox("Symmetric", &symmetricTiling)) {
+                    if (symmetricTiling) mat.textureScaleY = mat.textureScaleX;
+                    materialParamsChanged = true;
+                }
+                if (symmetricTiling) {
+                    materialParamsChanged |= ImGui::DragFloat("##TextureTilingSymmetric", &mat.textureScaleX, 0.1f, 0.1f, 64.0f, "%.2f");
+                    mat.textureScaleY = mat.textureScaleX;
+                } else {
+                    materialParamsChanged |= ImGui::DragFloat2("##TextureTiling", &mat.textureScaleX, 0.1f, 0.1f, 64.0f, "%.2f");
+                }
                 mat.textureScaleX = std::clamp(mat.textureScaleX, 0.1f, 64.0f);
                 mat.textureScaleY = std::clamp(mat.textureScaleY, 0.1f, 64.0f);
                 std::vector<const char*> physMatPtrs;

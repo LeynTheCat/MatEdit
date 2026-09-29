@@ -1212,9 +1212,31 @@ bool CompressBC7(const std::vector<std::vector<std::uint8_t>>& rgbaMips, const s
     return glGetError() == GL_NO_ERROR;
 }
 
-TexturePreviewInfo GenerateNormalMapPreviewTextureImpl(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, bool mipmaps) {
+void ApplyCreatorSharpness(TexturePixels& pixels, float sharpness) {
+    if (sharpness <= 0.0f || pixels.width < 2 || pixels.height < 2) return;
+    const float amount = std::clamp(sharpness, 0.0f, 4.0f);
+    const std::vector<std::uint8_t> original = pixels.rgba;
+    for (int y = 0; y < pixels.height; ++y) {
+        for (int x = 0; x < pixels.width; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                auto sample = [&](int sx, int sy) -> float {
+                    sx = std::clamp(sx, 0, pixels.width - 1);
+                    sy = std::clamp(sy, 0, pixels.height - 1);
+                    return original[(static_cast<std::size_t>(sy) * pixels.width + sx) * 4u + static_cast<std::size_t>(c)];
+                };
+                const float center = sample(x, y);
+                const float blur = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) * 0.25f;
+                const float value = center + (center - blur) * amount;
+                pixels.rgba[(static_cast<std::size_t>(y) * pixels.width + x) * 4u + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(std::clamp(value, 0.0f, 255.0f));
+            }
+        }
+    }
+}
+
+TexturePreviewInfo GenerateNormalMapPreviewTextureImpl(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, float sharpness, bool mipmaps) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return {};
+    ApplyCreatorSharpness(pixels, sharpness);
 
     std::vector<std::uint8_t> heightData;
     BuildHeight(pixels, heightChannel, invertHeight, heightData);
@@ -1252,9 +1274,10 @@ TexturePreviewInfo GenerateNormalMapPreviewTextureImpl(const std::string& source
     return UploadCreatorPreviewRGBA(rgba, pixels.width, pixels.height, mipmaps);
 }
 
-TexturePreviewInfo GenerateBumpMapPreviewTextureImpl(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, bool mipmaps) {
+TexturePreviewInfo GenerateBumpMapPreviewTextureImpl(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, float sharpness, bool mipmaps) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return {};
+    ApplyCreatorSharpness(pixels, sharpness);
 
     std::vector<std::uint8_t> height;
     BuildHeight(pixels, heightChannel, invert, height);
@@ -1271,9 +1294,10 @@ TexturePreviewInfo GenerateBumpMapPreviewTextureImpl(const std::string& source, 
     return UploadCreatorPreviewRGBA(rgba, pixels.width, pixels.height, mipmaps);
 }
 
-TexturePreviewInfo GenerateGlossMapPreviewTextureImpl(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, bool mipmaps) {
+TexturePreviewInfo GenerateGlossMapPreviewTextureImpl(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, float sharpness, bool mipmaps) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return {};
+    ApplyCreatorSharpness(pixels, sharpness);
 
     std::vector<std::uint8_t> luma;
     BuildLuma(pixels, luma);
@@ -1486,16 +1510,16 @@ bool LoadWadPixels(const std::string& reference, TexturePixels& pixels) {
 }
 }
 
-TexturePreviewInfo GenerateNormalMapPreviewTexture(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, bool mipmaps) {
-    return GenerateNormalMapPreviewTextureImpl(source, strength, flipX, flipY, fullZRange, heightChannel, invertHeight, mipmaps);
+TexturePreviewInfo GenerateNormalMapPreviewTexture(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, float sharpness, bool mipmaps) {
+    return GenerateNormalMapPreviewTextureImpl(source, strength, flipX, flipY, fullZRange, heightChannel, invertHeight, sharpness, mipmaps);
 }
 
-TexturePreviewInfo GenerateGlossMapPreviewTexture(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, bool mipmaps) {
-    return GenerateGlossMapPreviewTextureImpl(source, contrast, brightness, power, invert, metric, lowerThreshold, upperThreshold, normalize, mipmaps);
+TexturePreviewInfo GenerateGlossMapPreviewTexture(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, float sharpness, bool mipmaps) {
+    return GenerateGlossMapPreviewTextureImpl(source, contrast, brightness, power, invert, metric, lowerThreshold, upperThreshold, normalize, sharpness, mipmaps);
 }
 
-TexturePreviewInfo GenerateBumpMapPreviewTexture(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, bool mipmaps) {
-    return GenerateBumpMapPreviewTextureImpl(source, heightChannel, invert, contrast, brightness, normalize, mipmaps);
+TexturePreviewInfo GenerateBumpMapPreviewTexture(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, float sharpness, bool mipmaps) {
+    return GenerateBumpMapPreviewTextureImpl(source, heightChannel, invert, contrast, brightness, normalize, sharpness, mipmaps);
 }
 
 bool LoadTexturePixels(const std::string& reference, TexturePixels& pixels) {
@@ -1542,9 +1566,10 @@ bool LoadTexturePixels(const std::string& reference, TexturePixels& pixels) {
     return pixels.width > 0 && pixels.height > 0 && !pixels.rgba.empty() && glGetError() == GL_NO_ERROR;
 }
 
-bool GenerateNormalMapDDS(const std::string& source, const std::string& outputPath, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, bool mipmaps, int format) {
+bool GenerateNormalMapDDS(const std::string& source, const std::string& outputPath, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, float sharpness, bool mipmaps, int format) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return false;
+    ApplyCreatorSharpness(pixels, sharpness);
     std::vector<std::uint8_t> height;
     BuildHeight(pixels, heightChannel, invertHeight, height);
     std::vector<std::vector<std::uint8_t>> mipData;
@@ -1616,9 +1641,10 @@ bool GenerateNormalMapDDS(const std::string& source, const std::string& outputPa
     return WriteDDS(outputPath, pixels.width, pixels.height, mipData, format == 2 ? DXGI_FORMAT_BC7_UNORM : DXGI_FORMAT_BC5_UNORM, 16, format == 1 ? FourCC('A', 'T', 'I', '2') : 0u);
 }
 
-bool GenerateGlossMapDDS(const std::string& source, const std::string& outputPath, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, bool mipmaps, int format) {
+bool GenerateGlossMapDDS(const std::string& source, const std::string& outputPath, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, float sharpness, bool mipmaps, int format) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return false;
+    ApplyCreatorSharpness(pixels, sharpness);
     std::vector<std::uint8_t> luma;
     BuildLuma(pixels, luma);
     const float safeContrast = std::max(0.0f, contrast);
@@ -1695,9 +1721,10 @@ bool GenerateGlossMapDDS(const std::string& source, const std::string& outputPat
 }
 
 
-bool GenerateBumpMapDDS(const std::string& source, const std::string& outputPath, int heightChannel, bool invert, float contrast, float brightness, bool normalize, bool mipmaps, int format) {
+bool GenerateBumpMapDDS(const std::string& source, const std::string& outputPath, int heightChannel, bool invert, float contrast, float brightness, bool normalize, float sharpness, bool mipmaps, int format) {
     TexturePixels pixels;
     if (!LoadTexturePixels(source, pixels) || pixels.width <= 0 || pixels.height <= 0) return false;
+    ApplyCreatorSharpness(pixels, sharpness);
 
     std::vector<std::uint8_t> current;
     BuildHeight(pixels, heightChannel, invert, current);

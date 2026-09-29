@@ -120,9 +120,9 @@ struct TexturePixels {
 };
 
 bool LoadTexturePixels(const std::string& reference, TexturePixels& pixels);
-TexturePreviewInfo GenerateNormalMapPreviewTexture(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, bool mipmaps);
-TexturePreviewInfo GenerateGlossMapPreviewTexture(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, bool mipmaps);
-TexturePreviewInfo GenerateBumpMapPreviewTexture(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, bool mipmaps);
-bool GenerateNormalMapDDS(const std::string& source, const std::string& outputPath, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, bool mipmaps, int format);
-bool GenerateGlossMapDDS(const std::string& source, const std::string& outputPath, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, bool mipmaps, int format);
-bool GenerateBumpMapDDS(const std::string& source, const std::string& outputPath, int heightChannel, bool invert, float contrast, float brightness, bool normalize, bool mipmaps, int format);
+TexturePreviewInfo GenerateNormalMapPreviewTexture(const std::string& source, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, float sharpness, bool mipmaps);
+TexturePreviewInfo GenerateGlossMapPreviewTexture(const std::string& source, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, float sharpness, bool mipmaps);
+TexturePreviewInfo GenerateBumpMapPreviewTexture(const std::string& source, int heightChannel, bool invert, float contrast, float brightness, bool normalize, float sharpness, bool mipmaps);
+bool GenerateNormalMapDDS(const std::string& source, const std::string& outputPath, float strength, bool flipX, bool flipY, bool fullZRange, int heightChannel, bool invertHeight, float sharpness, bool mipmaps, int format);
+bool GenerateGlossMapDDS(const std::string& source, const std::string& outputPath, float contrast, float brightness, float power, bool invert, int metric, float lowerThreshold, float upperThreshold, bool normalize, float sharpness, bool mipmaps, int format);
+bool GenerateBumpMapDDS(const std::string& source, const std::string& outputPath, int heightChannel, bool invert, float contrast, float brightness, bool normalize, float sharpness, bool mipmaps, int format);
